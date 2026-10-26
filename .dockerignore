@@ -1,0 +1,36 @@
+# Version control
+.git
+.gitignore
+.github
+
+# Next.js build output & caches
+.next
+node_modules/.cache
+*.tsbuildinfo
+
+# Local databases & env files (secrets never enter the image)
+db/
+*.db
+*.db-journal
+.env
+.env.*
+!.env.example
+
+# Dev-only project files not needed at runtime
+dev.log
+server.log
+eslint.config.mjs
+tests/
+examples/
+mini-services/
+skills/
+upload/
+download/
+tool-results/
+agent-ctx/
+worklog.md
+README.md
+.DS_Store
+docker-compose*.yml
+Dockerfile
+.dockerignore

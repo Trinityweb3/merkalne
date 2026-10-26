@@ -1,0 +1,49 @@
+# ---------------------------------------------------------------------------
+# Merklane — ESCAPE HATCH for broken Docker bridge egress (Arch + strict
+# firewalls, VPN MTU pathologies, hardened nftables setups).
+#
+#   docker compose -f docker-compose.yml -f docker-compose.egress.yml up -d
+#
+# What it changes (relative to docker-compose.yml):
+#   - app and worker join the HOST network (same network the build phase
+#     already uses successfully — `network: host` under build:).
+#   - their DATABASE_URL switches from db:5432 (bridge DNS) to
+#     127.0.0.1:${DB_HOST_PORT:-5433} — the db's published host port.
+#   - port publishing and pinned DNS for app/worker are reset (meaningless
+#     on the host network).
+#   - the db service is untouched: it stays isolated on merklane-net with
+#     its volume, healthcheck and the 127.0.0.1:${DB_HOST_PORT:-5433} mapping.
+#
+# Result: Resend (api.resend.com), OAuth (oauth2.googleapis.com, github.com)
+# and feed fetches leave through the host stack exactly like builds do —
+# guaranteed to work whenever `docker build` works.
+#
+# Trade-offs (why this is not the default):
+#   - app/worker lose network isolation (they see every host service);
+#     the app still binds 0.0.0.0:3000 on the host, same as the published
+#     port did.
+#   - container-to-container DNS (db) is not used by app/worker anymore —
+#     hence the 127.0.0.1 DATABASE_URL.
+# Requires Docker Compose v2.24+ for the !reset tag (Arch's docker-compose
+# is far newer). On older Compose, delete the ports/dns keys manually.
+# ---------------------------------------------------------------------------
+
+services:
+  app:
+    network_mode: host
+    # Port publishing, pinned DNS and bridge membership are meaningless (and
+    # error/warn) on the host network.
+    ports: !reset []
+    dns: !reset []
+    networks: !reset []
+    environment:
+      # Host-side address of the bundled PostgreSQL (its published mapping).
+      DATABASE_URL: postgresql://merklane:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@127.0.0.1:${DB_HOST_PORT:-5433}/merklane?schema=public
+    # depends_on db (healthy) still orders the boot.
+
+  worker:
+    network_mode: host
+    dns: !reset []
+    networks: !reset []
+    environment:
+      DATABASE_URL: postgresql://merklane:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@127.0.0.1:${DB_HOST_PORT:-5433}/merklane?schema=public

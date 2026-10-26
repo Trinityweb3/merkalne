@@ -1,0 +1,369 @@
+// ---------------------------------------------------------------------------
+// Merklane — Prisma schema (PostgreSQL, production)
+// ---------------------------------------------------------------------------
+// Portable modelling rules applied so the same model definitions also compile
+// for the local SQLite preview:
+//   * no Prisma enums (SQLite does not support them) — validated in app layer
+//   * no scalar lists    (stored as normalised comma-separated strings)
+//   * no @db.* type annotations
+// ---------------------------------------------------------------------------
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Identity & access
+// ---------------------------------------------------------------------------
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  emailVerified DateTime?
+  name          String?
+  /// bcrypt hash — null until the user sets a password (OAuth-only users)
+  passwordHash  String?
+  image         String?
+  /// "user" | "admin" — server-side authorisation only, never client supplied
+  role          String    @default("user")
+  /// "free" | "premium" — premium unlocks job-alert dispatch (bots worker)
+  plan          String    @default("free")
+  /// While set in the future the premium plan is active (null = never expires)
+  premiumUntil  DateTime?
+  /// User-facing biography shown on the public profile
+  bio           String?
+  /// Comma separated public links (validated URLs)
+  links         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  accounts       Account[]
+  sessions       Session[]
+  posts          Post[]
+  comments       Comment[]
+  reactions      Reaction[]
+  bookmarks      Bookmark[]
+  telegramLink   TelegramLink?
+  discordWebhook DiscordWebhook?
+
+  @@index([email])
+  @@index([plan])
+}
+
+/// Linked OAuth identities (Google / GitHub). One user may own several.
+model Account {
+  id                String   @id @default(cuid())
+  userId            String
+  provider          String // "google" | "github"
+  providerAccountId String
+  createdAt         DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+/// Opaque server-side sessions. Only the SHA-256 hash of the cookie token is
+/// stored, so a database leak cannot be replayed as a valid session.
+model Session {
+  id         String   @id @default(cuid())
+  tokenHash  String   @unique
+  userId     String
+  userAgent  String?
+  ip         String?
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  lastUsedAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+/// Single-use, hashed, expiring tokens: email verification, magic links and
+/// password resets share this table, discriminated by `type`.
+model VerificationToken {
+  id         String    @id @default(cuid())
+  identifier String // email address the token was issued to
+  tokenHash  String    @unique
+  type       String // "email_verify" | "magic_link" | "password_reset"
+  expiresAt  DateTime
+  usedAt     DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([identifier, type])
+  @@index([expiresAt])
+}
+
+// ---------------------------------------------------------------------------
+// Content
+// ---------------------------------------------------------------------------
+
+model Post {
+  id           String    @id @default(cuid())
+  slug         String    @unique
+  /// "intern-junior" | "mid-senior" | "opportunities" | "markets" | "insights" | "blog"
+  section      String
+  /// Card label: Job / Internship / Testnet / Quest / Analysis / News / …
+  kind         String?
+  title        String
+  company      String?
+  location     String?
+  /// Remote / Hybrid / On-site
+  workplace    String?
+  /// Full-time / Part-time / Internship / …
+  employment   String?
+  /// Junior / Mid / Senior / Lead / …
+  level        String?
+  /// Human readable salary range — null means "not provided", never zero
+  salary       String?
+  /// Specialisation summary, e.g. "Rust / Solana"
+  stack        String?
+  /// Full markdown-lite body (sanitised on render)
+  body         String
+  applyUrl     String?
+  originalUrl  String?
+  /// Normalised comma separated hashtags, e.g. "crypto,trading,junior"
+  tags         String    @default("")
+  /// "draft" | "published" | "archived" | "deleted"
+  status       String    @default("draft")
+  authorId     String?
+  sourceLocale String    @default("en")
+  /// Who/what created the post: "web" | "telegram" | "discord" | "worker-feed"
+  source       String    @default("web")
+  /// External reference for ingestion dedupe (feed id / URL) — null for human posts
+  sourceRef    String?
+  /// Set once premium notifications have been dispatched for this post
+  notifiedAt   DateTime?
+  publishedAt  DateTime?
+  views        Int       @default(0)
+  likeCount    Int       @default(0)
+  dislikeCount Int       @default(0)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  author           User?             @relation(fields: [authorId], references: [id], onDelete: SetNull)
+  reactions        Reaction[]
+  bookmarks        Bookmark[]
+  comments         Comment[]
+  reports          Report[]
+  notificationLogs NotificationLog[]
+
+  @@index([section, status, publishedAt])
+  @@index([status, publishedAt])
+  @@index([status, notifiedAt])
+  @@index([source, sourceRef])
+  @@index([authorId])
+}
+
+model Reaction {
+  id        String   @id @default(cuid())
+  postId    String
+  userId    String
+  /// "like" | "dislike" — one active reaction per user per post
+  value     String
+  createdAt DateTime @default(now())
+
+  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([postId, userId])
+}
+
+model Bookmark {
+  id        String   @id @default(cuid())
+  postId    String
+  userId    String
+  createdAt DateTime @default(now())
+
+  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([postId, userId])
+  @@index([userId])
+}
+
+model Comment {
+  id        String   @id @default(cuid())
+  postId    String
+  userId    String
+  body      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([postId, createdAt])
+}
+
+/// Moderation queue. Reporters never need an account; reporter identity is
+/// never published next to the post.
+model Report {
+  id        String   @id @default(cuid())
+  postId    String
+  reason    String
+  details   String?
+  contact   String?
+  /// "open" | "in_review" | "resolved" | "dismissed"
+  status    String   @default("open")
+  createdAt DateTime @default(now())
+
+  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@index([status, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Growth
+// ---------------------------------------------------------------------------
+
+/// Merklane Ads launch waitlist (/ads "Coming soon" capture).
+model WaitlistEntry {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  /// Where the signup happened: "ads" | "premium" | …
+  source    String   @default("ads")
+  createdAt DateTime @default(now())
+}
+
+/// Contact / report messages sent from the public contact page.
+model ContactMessage {
+  id        String   @id @default(cuid())
+  email     String
+  subject   String
+  body      String
+  createdAt DateTime @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// Bots & background workers (job ingestion + premium job alerts)
+// ---------------------------------------------------------------------------
+
+/// Links a web account to a Telegram chat so the premium-alerts worker can DM
+/// new job postings. The one-time deep-link token is stored hashed only.
+model TelegramLink {
+  id        String    @id @default(cuid())
+  userId    String    @unique
+  chatId    String?   @unique
+  username  String?
+  /// SHA-256 hash of the one-time /start deep-link token
+  linkTokenHash String @unique
+  notificationsEnabled Boolean @default(true)
+  linkedAt  DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+/// Personal Discord webhook for premium job alerts (user pastes a webhook URL
+/// from their own server). The URL is AES-256-GCM encrypted at rest.
+model DiscordWebhook {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  /// Encrypted webhook URL — never stored in plaintext
+  urlEnc    String
+  /// Friendly reminder of where this webhook points, e.g. "My private server"
+  label     String?
+  notificationsEnabled Boolean @default(true)
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+/// Per-post × per-channel delivery ledger. The unique triple
+/// (postId, channel, recipient) makes dispatch idempotent — a recipient never
+/// receives the same posting twice, even across worker restarts.
+model NotificationLog {
+  id        String    @id @default(cuid())
+  postId    String
+  /// "email" | "telegram" | "discord"
+  channel   String
+  /// Email address, Telegram chat id, or masked Discord webhook
+  recipient String
+  userId    String?
+  /// "pending" | "sent" | "failed" | "skipped"
+  status    String    @default("pending")
+  attempts  Int       @default(0)
+  error     String?
+  createdAt DateTime  @default(now())
+  sentAt    DateTime?
+
+  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@unique([postId, channel, recipient])
+  @@index([status, createdAt])
+  @@index([postId])
+  @@index([userId])
+}
+
+/// Audit trail for every bot/worker write (job created, command rejected,
+/// feed fetched, premium granted, …) — used for observability and rate audits.
+model IngestionLog {
+  id        String   @id @default(cuid())
+  /// "telegram" | "discord" | "worker-feed" | "web" | "worker-stats"
+  source    String
+  action    String
+  ok        Boolean  @default(true)
+  detail    String?
+  actor     String?
+  createdAt DateTime @default(now())
+
+  @@index([source, createdAt])
+  @@index([ok, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// About-page statistics (anonymous visitor measurement + daily snapshots)
+// ---------------------------------------------------------------------------
+
+/// One row per deduplicated page view, written by the /api/track beacon.
+/// PRIVACY: no raw IP, no user agent and no user id are ever stored —
+/// `visitorId` is HMAC-SHA256(ip + user-agent) (stable per visitor, not
+/// reversible) and `country` is a 2-letter ISO code taken from proxy headers
+/// only (CF-IPCountry / x-vercel-ip-country). "XX" means unknown.
+model Visit {
+  id        String   @id @default(cuid())
+  /// First-party page path, e.g. "/mid-senior/some-slug"
+  path      String
+  /// Content section slug, or "home" | "about" | "search" | "premium" | "auth" | "profile" | "other"
+  section   String
+  /// ISO 3166-1 alpha-2 country code from proxy headers ("XX" = unknown)
+  country   String   @default("XX")
+  /// HMAC-SHA256(ip + user-agent) — dedupe + unique-visitor counting
+  visitorId String
+  createdAt DateTime @default(now())
+
+  @@index([visitorId, createdAt])
+  @@index([section, createdAt])
+  @@index([country, createdAt])
+}
+
+/// One snapshot of the public About-page statistics per UTC day. Computed by
+/// the worker once per day (STATS_SNAPSHOT_UTC_HOUR, with backfill for missed
+/// days) or on demand by an admin via POST /api/admin/stats. The JSON shape is
+/// versioned (see StatsSnapshot in src/lib/stats/types.ts) and stores raw
+/// numbers only — all labels/formatting live in the UI so a future i18n layer
+/// only needs to translate labels, never data.
+model DailyStats {
+  id        String   @id @default(cuid())
+  /// UTC midnight of the day this snapshot describes
+  date      DateTime @unique
+  /// Versioned StatsSnapshot JSON (raw numbers, no localized strings)
+  data      Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([date])
+}

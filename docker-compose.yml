@@ -1,0 +1,165 @@
+# ---------------------------------------------------------------------------
+# Merklane — production stack
+#   app    : Next.js (standalone) on :3000, migrations on boot
+#   worker : background bot process (job-feed ingestion + premium dispatch)
+#   db     : PostgreSQL 16 with a persistent volume and healthcheck
+#
+#   cp .env.example .env  → fill values → docker compose up -d --build
+# ---------------------------------------------------------------------------
+
+name: merklane
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      # Build on the host network: on some setups (Arch + iptables-nft, VPN
+      # MTU < 1500, broken IPv6) build containers cannot reach the npm
+      # registry through the Docker bridge and `bun install` stalls forever.
+      # This affects BUILD time only — the running containers stay isolated
+      # on the merklane-net bridge network below.
+      network: host
+    container_name: merklane-app
+    restart: unless-stopped
+    # External DNS: containers on user-defined networks resolve external
+    # names through Docker's embedded DNS (127.0.0.11), which forwards to
+    # the host's resolv.conf upstream. On hosts where that upstream is a
+    # loopback stub (systemd-resolved 127.0.0.53) or is unreachable from
+    # the container namespace, api.resend.com / oauth2.googleapis.com /
+    # github.com fail. Pinning public resolvers fixes the DNS path while
+    # container-to-container names (db) keep resolving via the embedded
+    # DNS. See docker/fix-container-network.sh if connections still fail.
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    ports:
+      - "3000:3000"
+    environment:
+      # Overridden from .env so container networking always resolves.
+      DATABASE_URL: postgresql://merklane:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/merklane?schema=public
+      DATABASE_PROVIDER: postgresql
+      APP_URL: ${APP_URL:-http://localhost:3000}
+      AUTH_SECRET: ${AUTH_SECRET:?set AUTH_SECRET in .env}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      EMAIL_FROM: ${EMAIL_FROM:-Merklane <noreply@merklane.com>}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
+      SEED_ON_BOOT: ${SEED_ON_BOOT:-false}
+      # Bots (webhook routes live in the app process)
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:-}
+      TELEGRAM_ADMIN_USER_IDS: ${TELEGRAM_ADMIN_USER_IDS:-}
+      TELEGRAM_BOT_USERNAME: ${TELEGRAM_BOT_USERNAME:-}
+      DISCORD_APPLICATION_ID: ${DISCORD_APPLICATION_ID:-}
+      DISCORD_BOT_PUBLIC_KEY: ${DISCORD_BOT_PUBLIC_KEY:-}
+      DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:-}
+      DISCORD_ADMIN_USER_IDS: ${DISCORD_ADMIN_USER_IDS:-}
+      NOTIFICATIONS_SUBJECT_PREFIX: ${NOTIFICATIONS_SUBJECT_PREFIX:-[Merklane Jobs]}
+      # About-page statistics: anonymous page-view beacon
+      TRACKING_ENABLED: ${TRACKING_ENABLED:-true}
+      TRACK_DEDUPE_MINUTES: ${TRACK_DEDUPE_MINUTES:-30}
+      # Donation wallets shown in the support sheet (empty = hidden)
+      DONATION_SOL_ADDRESS: ${DONATION_SOL_ADDRESS:-}
+      DONATION_BTC_ADDRESS: ${DONATION_BTC_ADDRESS:-}
+      DONATION_USDT_EVM_ADDRESS: ${DONATION_USDT_EVM_ADDRESS:-}
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - merklane-net
+    healthcheck:
+      test: ["CMD", "bun", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+  # -------------------------------------------------------------------------
+  # Background bot worker: ingests external job feeds and dispatches premium
+  # job alerts (email / Telegram / Discord). Same image as the app, different
+  # command. Disable entirely with WORKER_ENABLED=false.
+  # -------------------------------------------------------------------------
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      # Same rationale as the app service: host networking for the build.
+      network: host
+    container_name: merklane-worker
+    restart: unless-stopped
+    # Same DNS rationale as the app service (external feed/alert endpoints).
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    command: ["bun", "dist/worker.js"]
+    environment:
+      DATABASE_URL: postgresql://merklane:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/merklane?schema=public
+      DATABASE_PROVIDER: postgresql
+      APP_URL: ${APP_URL:-http://localhost:3000}
+      AUTH_SECRET: ${AUTH_SECRET:?set AUTH_SECRET in .env}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      EMAIL_FROM: ${EMAIL_FROM:-Merklane <noreply@merklane.com>}
+      WORKER_ENABLED: ${WORKER_ENABLED:-true}
+      WORKER_INGEST_INTERVAL_SECONDS: ${WORKER_INGEST_INTERVAL_SECONDS:-300}
+      WORKER_DISPATCH_INTERVAL_SECONDS: ${WORKER_DISPATCH_INTERVAL_SECONDS:-60}
+      INGEST_FEED_URLS: ${INGEST_FEED_URLS:-}
+      AUTO_PUBLISH_INGESTED_JOBS: ${AUTO_PUBLISH_INGESTED_JOBS:-false}
+      NOTIFICATION_RETRY_MAX: ${NOTIFICATION_RETRY_MAX:-3}
+      NOTIFICATION_EMAIL_CONCURRENCY: ${NOTIFICATION_EMAIL_CONCURRENCY:-4}
+      NOTIFICATIONS_SUBJECT_PREFIX: ${NOTIFICATIONS_SUBJECT_PREFIX:-[Merklane Jobs]}
+      # About-page statistics: daily snapshot schedule
+      STATS_SNAPSHOT_UTC_HOUR: ${STATS_SNAPSHOT_UTC_HOUR:-3}
+      STATS_CHECK_INTERVAL_SECONDS: ${STATS_CHECK_INTERVAL_SECONDS:-900}
+      STATS_BACKFILL_DAYS: ${STATS_BACKFILL_DAYS:-7}
+    depends_on:
+      db:
+        condition: service_healthy
+      app:
+        condition: service_healthy
+    networks:
+      - merklane-net
+    healthcheck:
+      # The worker touches /tmp/worker-heartbeat every 15 s; fail when the
+      # file goes stale (hung event loop or crashed loop) for > 2 minutes.
+      test: ["CMD", "bun", "-e", "const fs=require('fs');try{const s=fs.statSync('/tmp/worker-heartbeat');process.exit(Date.now()-s.mtimeMs>120000?1:0)}catch{process.exit(1)}"]
+      interval: 30s
+      timeout: 5s
+      start_period: 45s
+      retries: 3
+
+  db:
+    image: postgres:16-alpine
+    container_name: merklane-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: merklane
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: merklane
+    volumes:
+      - merklane-pgdata:/var/lib/postgresql/data
+    networks:
+      - merklane-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U merklane -d merklane"]
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+      retries: 5
+    # Optional convenience for host-side psql access; remove in hardened
+    # deploys. The HOST side defaults to 5433 because a native PostgreSQL
+    # very commonly owns 5432 already (docker then fails with
+    # "address already in use"). The container-internal port stays 5432 —
+    # the app talks to db:5432 over merklane-net and never uses this mapping.
+    ports:
+      - "127.0.0.1:${DB_HOST_PORT:-5433}:5432"
+
+volumes:
+  merklane-pgdata:
+
+networks:
+  merklane-net:
+    driver: bridge
