@@ -17,7 +17,6 @@
     "db:reset": "prisma migrate reset",
     "worker": "bun worker/worker.ts",
     "bots:telegram-webhook": "bun scripts/set-telegram-webhook.ts",
-    "bots:discord-commands": "bun scripts/register-discord-commands.ts",
     "premium:grant": "bun scripts/grant-premium.ts"
   },
   "dependencies": {

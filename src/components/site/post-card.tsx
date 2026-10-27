@@ -60,7 +60,10 @@ export function PostCard({ post, compact }: { post: SerializedPost; compact?: bo
 
       {!compact && post.section !== 'intern-junior' && post.section !== 'mid-senior' ? (
         <Link href={href} className="card-snippet">
-          {snippet(post.body)}
+          {/* post.snippet = the machine-translated excerpt on localized
+              routes (filled by localizePostList); English falls back to the
+              plain-text excerpt of the body. */}
+          {post.snippet ?? snippet(post.body)}
         </Link>
       ) : null}
 

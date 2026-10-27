@@ -21,6 +21,7 @@ prisma/migrations/0001_init/migration.sql
 prisma/migrations/0002_bots_premium_alerts/migration.sql
 prisma/migrations/0003_about_stats/migration.sql
 prisma/migrations/0004_translations_admin_state/migration.sql
+prisma/migrations/0005_drop_discord/migration.sql
 prisma/migrations/migration_lock.toml
 prisma/schema.prisma
 prisma/schema.sqlite.prisma
@@ -31,7 +32,6 @@ scripts/build-export.sh
 scripts/check-db-0004.ts
 scripts/demo-stats.ts
 scripts/grant-premium.ts
-scripts/register-discord-commands.ts
 scripts/run-admin-bot-e2e.sh
 scripts/run-regression.sh
 scripts/run-translation-e2e.sh
@@ -86,7 +86,6 @@ src/app/api/auth/reset-password/route.ts
 src/app/api/auth/session/route.ts
 src/app/api/auth/verify-email/request/route.ts
 src/app/api/auth/verify-email/route.ts
-src/app/api/bots/discord/webhook/route.ts
 src/app/api/bots/telegram/link/route.ts
 src/app/api/contact/route.ts
 src/app/api/donations/route.ts
@@ -104,7 +103,6 @@ src/app/api/search/route.ts
 src/app/api/stats/latest/route.ts
 src/app/api/track/route.ts
 src/app/api/waitlist/route.ts
-src/app/api/webhooks/discord/route.ts
 src/app/api/webhooks/telegram-admin/route.ts
 src/app/api/webhooks/telegram/route.ts
 src/app/globals.css
@@ -217,14 +215,13 @@ src/lib/about-content.ts
 src/lib/api-client.ts
 src/lib/api.ts
 src/lib/auth.ts
+src/lib/bots/bulk-parse.ts
 src/lib/bots/config.ts
-src/lib/bots/discord.ts
 src/lib/bots/dispatch.ts
 src/lib/bots/email-alerts.ts
 src/lib/bots/feeds.ts
 src/lib/bots/format.ts
 src/lib/bots/intake.ts
-src/lib/bots/secretbox.ts
 src/lib/bots/telegram.ts
 src/lib/constants.ts
 src/lib/csrf.ts

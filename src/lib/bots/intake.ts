@@ -1,8 +1,7 @@
 /**
  * Job intake — the shared write path behind every ingestion channel:
  *
- *   • Telegram  → /api/webhooks/telegram   (admin commands)
- *   • Discord   → /api/webhooks/discord    (admin slash commands)
+ *   • Telegram  → /api/webhooks/telegram-admin (bulk-paste composer + commands)
  *   • Worker    → src/lib/bots/feeds.ts    (external job feeds)
  *   • Web       → /api/posts               (existing composer, unchanged)
  *
@@ -21,7 +20,7 @@ import { dispatchPendingPosts } from './dispatch'
 // Spec & validation
 // ---------------------------------------------------------------------------
 
-export const JOB_SOURCES = ['web', 'telegram', 'discord', 'worker-feed'] as const
+export const JOB_SOURCES = ['web', 'telegram', 'worker-feed'] as const
 export type JobSource = (typeof JOB_SOURCES)[number]
 
 const SECTION_ALIASES: Record<string, PostSection> = {
@@ -37,6 +36,11 @@ const SECTION_ALIASES: Record<string, PostSection> = {
   markets: 'markets',
   insights: 'insights',
   blog: 'blog',
+}
+
+/** Resolve a human-typed section name (alias or exact) → canonical section. */
+export function resolveSectionName(input: string): PostSection | undefined {
+  return SECTION_ALIASES[input.trim().toLowerCase()]
 }
 
 const DEFAULT_KIND: Record<PostSection, string> = {

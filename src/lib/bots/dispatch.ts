@@ -7,7 +7,6 @@
  *
  *   • email    → Resend (branded alert template)
  *   • telegram → Bot API DM (user linked their chat via /alerts)
- *   • discord  → the user's personal incoming webhook (encrypted at rest)
  *
  * Idempotency: the (postId, channel, recipient) unique index guarantees a
  * recipient never receives the same posting twice, even across worker
@@ -20,10 +19,8 @@ import { Prisma } from '@prisma/client'
 import { db } from '../db'
 import { botEnv } from './config'
 import { telegramSendMessage } from './telegram'
-import { executeDiscordWebhook, maskDiscordWebhook } from './discord'
-import { decryptSecret } from './secretbox'
 import { sendJobAlertEmail } from './email-alerts'
-import { formatTelegramJobAlert, formatDiscordJobAlert, type AlertPost } from './format'
+import { formatTelegramJobAlert, type AlertPost } from './format'
 
 // ---------------------------------------------------------------------------
 // Recipients
@@ -33,7 +30,6 @@ export interface PremiumRecipient {
   id: string
   email: string
   telegramChatId: string | null
-  discordWebhookEnc: string | null
 }
 
 /** Users with an active premium plan (plan=premium AND not expired). */
@@ -47,7 +43,6 @@ export async function activePremiumUsers(): Promise<PremiumRecipient[]> {
       id: true,
       email: true,
       telegramLink: { select: { chatId: true, notificationsEnabled: true } },
-      discordWebhook: { select: { urlEnc: true, notificationsEnabled: true } },
     },
   })
   return users.map((u) => ({
@@ -55,8 +50,6 @@ export async function activePremiumUsers(): Promise<PremiumRecipient[]> {
     email: u.email,
     telegramChatId:
       u.telegramLink?.chatId && u.telegramLink.notificationsEnabled ? u.telegramLink.chatId : null,
-    discordWebhookEnc:
-      u.discordWebhook?.urlEnc && u.discordWebhook.notificationsEnabled ? u.discordWebhook.urlEnc : null,
   }))
 }
 
@@ -64,7 +57,7 @@ export async function activePremiumUsers(): Promise<PremiumRecipient[]> {
 // Delivery primitives
 // ---------------------------------------------------------------------------
 
-type Channel = 'email' | 'telegram' | 'discord'
+type Channel = 'email' | 'telegram'
 
 interface QueuedDelivery {
   channel: Channel
@@ -94,32 +87,6 @@ function buildDeliveries(post: AlertPost, recipients: PremiumRecipient[]): Queue
             delivered: res.delivered,
             error: res.delivered ? undefined : res.description,
           })),
-      })
-    }
-
-    if (r.discordWebhookEnc) {
-      // Recipient identifier = masked webhook (stable per webhook id), computed
-      // eagerly so the unique index sees a deterministic value.
-      let mask = 'discord:invalid'
-      try {
-        mask = maskDiscordWebhook(decryptSecret(r.discordWebhookEnc))
-      } catch {
-        // AUTH_SECRET rotated or corrupted row — delivery will fail + log.
-      }
-      queue.push({
-        channel: 'discord',
-        recipient: mask,
-        userId: r.id,
-        send: async () => {
-          try {
-            const url = decryptSecret(r.discordWebhookEnc as string)
-            const { content, embed } = formatDiscordJobAlert(post)
-            const res = await executeDiscordWebhook(url, content, embed)
-            return { delivered: res.delivered, error: res.error }
-          } catch (err) {
-            return { delivered: false, error: err instanceof Error ? err.message : 'decrypt_failed' }
-          }
-        },
       })
     }
   }
@@ -247,15 +214,9 @@ export async function retryFailedNotifications(): Promise<{ retried: number; sen
         const res = await telegramSendMessage(row.recipient, formatTelegramJobAlert(row.post))
         result = { delivered: res.delivered, error: res.delivered ? undefined : res.description }
       } else {
-        const link = await db.discordWebhook.findUnique({ where: { userId: row.userId ?? '' } })
-        if (!link) {
-          result = { delivered: false, error: 'webhook_removed' }
-        } else {
-          const url = decryptSecret(link.urlEnc)
-          const { content, embed } = formatDiscordJobAlert(row.post)
-          const res = await executeDiscordWebhook(url, content, embed)
-          result = { delivered: res.delivered, error: res.error }
-        }
+        // Legacy rows from removed channels (e.g. Discord) — mark failed so
+        // they age out through the retry cap instead of crashing the worker.
+        result = { delivered: false, error: 'channel_removed' }
       }
     } catch (err) {
       result = { delivered: false, error: err instanceof Error ? err.message : 'send_error' }

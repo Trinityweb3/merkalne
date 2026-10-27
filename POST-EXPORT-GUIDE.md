@@ -193,7 +193,7 @@ unconfigured optional features (OAuth buttons, bots) instead of failing silently
 | 1 | `DATABASE_URL` | `postgresql://merklane:SECRET@localhost:5432/merklane?schema=public` | Your PostgreSQL connection string. With docker-compose you do NOT edit this — compose builds it from `POSTGRES_PASSWORD`. For a local PG: user:password@host:port/dbname | **Yes** (prod). Breaks everything without it — the app cannot start |
 | 2 | `DATABASE_PROVIDER` | `postgresql` (or `sqlite` for the local preview only) | Fixed choice — no account needed | No (defaults to `postgresql`) |
 | 3 | `APP_URL` | `https://merklane.yourdomain.com` — no trailing slash | Your deployment's public origin. Locally: `http://localhost:3000` (default) | **Yes** (prod). Without it: email links, OAuth redirects and CSRF origin checks point at the wrong host |
-| 4 | `AUTH_SECRET` | 64-char random string | Generate: `openssl rand -base64 48` | **Yes** (prod, ≥32 chars). Without it: dev only works with an ephemeral secret (sessions reset on restart); in production the boot aborts. Also encrypts stored Discord webhook URLs — rotating it makes old stored webhooks unreadable |
+| 4 | `AUTH_SECRET` | 64-char random string | Generate: `openssl rand -base64 48` | **Yes** (prod, ≥32 chars). Without it: dev only works with an ephemeral secret (sessions reset on restart); in production the boot aborts. Rotating it invalidates existing sessions |
 
 ### Email (Resend)
 
@@ -247,7 +247,7 @@ still fail with `ConnectionRefused` from the containers while working from
 | 15 | `TELEGRAM_WEBHOOK_SECRET` | 48-char hex | Generate: `openssl rand -hex 24` — then register it once: `bun scripts/set-telegram-webhook.ts` (Telegram will echo it in the `X-Telegram-Bot-Api-Secret-Token` header on every call) | No. Without it the webhook rejects everything (this is the bot's authentication, CSRF does not apply to server-to-server calls) |
 | 16 | `TELEGRAM_ADMIN_USER_IDS` | `11111111,22222222` | In Telegram, message **@userinfobot** — it replies with your numeric id | No. Without it ALL admin commands (`/addjob /publish /grant…`) are denied for everyone — by design |
 | 17 | `TELEGRAM_BOT_USERNAME` | `merklane_jobs_bot` (no `@`) | @BotFather → `/mybots` → the bot's username | No. Without it: `/alerts` cannot generate t.me deep links (Telegram link flow disabled) |
-| 17a | `TELEGRAM_ADMIN_BOT_TOKEN` | `123456789:BBf7…` | @BotFather → `/newbot` **again** — a SECOND, separate bot (e.g. `merklane_intake_bot`) that runs the admin job-composer wizard (`/start` → ➕ Add job → inline buttons) | No. Without it the admin intake bot stays disabled (the webhook answers 503 "not configured") |
+| 17a | `TELEGRAM_ADMIN_BOT_TOKEN` | `123456789:BBf7…` | @BotFather → `/newbot` **again** — a SECOND, separate bot (e.g. `merklane_intake_bot`) with the bulk-paste job composer: tap ➕ Add job, paste the raw job text, confirm the parsed fields with inline buttons (✅ Publish) | No. Without it the admin intake bot stays disabled (the webhook answers 503 "not configured") |
 | 17b | `TELEGRAM_ADMIN_WEBHOOK_SECRET` | different 48-char hex | Generate: `openssl rand -hex 24` — MUST differ from #15. Register both bots with the same script: `bun scripts/set-telegram-webhook.ts` (or one bot at a time with `--notifier` / `--admin`) | No. Without it the admin webhook rejects every update |
 
 > **Two bots, two roles.** The notifier bot (#14) only SENDS premium alert DMs and
@@ -256,15 +256,6 @@ still fail with `ConnectionRefused` from the containers while working from
 > listed in `TELEGRAM_ADMIN_USER_IDS` (#16) may talk to the admin bot — everyone
 > else gets rejected. They are deliberately separate @BotFather bots so a
 > leaked notifier token can never be used to publish jobs.
-
-### Bots — Discord (slash-command ingestion)
-
-| # | Variable | Write this (example) | Where to get it | Required? |
-|---|----------|----------------------|-----------------|-----------|
-| 18 | `DISCORD_APPLICATION_ID` | `1198765432109876543` | https://discord.com/developers/applications → *New Application* → open it → **General Information** → *Application ID* → Copy | No. Without it (or #19): the webhook answers 503, slash commands never verify |
-| 19 | `DISCORD_BOT_PUBLIC_KEY` | 64 hex chars, e.g. `b0e7dcdfa98647…` | Same page → **Public Key** → Copy (used to Ed25519-verify every interaction) | No — same as above |
-| 20 | `DISCORD_BOT_TOKEN` | `MTE5ODc2…` | Same app → **Bot** tab (https://discord.com/developers/applications → your app → Bot) → *Reset Token* → Copy — only needed for `bun scripts/register-discord-commands.ts` | No. Without it: commands cannot be registered, but already-registered commands keep working |
-| 21 | `DISCORD_ADMIN_USER_IDS` | `333344445555666677` | In Discord: *Settings → Advanced → enable Developer Mode* → right-click your own name → **Copy User ID** | No. Without it all Discord admin commands are denied for everyone |
 
 ### Background worker
 

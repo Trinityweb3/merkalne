@@ -49,7 +49,6 @@ model User {
   reactions      Reaction[]
   bookmarks      Bookmark[]
   telegramLink   TelegramLink?
-  discordWebhook DiscordWebhook?
 
   @@index([email])
   @@index([plan])
@@ -136,7 +135,8 @@ model Post {
   status       String    @default("draft")
   authorId     String?
   sourceLocale String    @default("en")
-  /// Who/what created the post: "web" | "telegram" | "discord" | "worker-feed"
+  /// Who/what created the post: "web" | "telegram" | "worker-feed"
+  /// (legacy rows may still carry "discord" from before the channel was dropped)
   source       String    @default("web")
   /// External reference for ingestion dedupe (feed id / URL) — null for human posts
   sourceRef    String?
@@ -275,29 +275,13 @@ model TelegramAdminState {
   id          String   @id @default(cuid())
   /// Telegram user id (must be listed in TELEGRAM_ADMIN_USER_IDS)
   adminUserId String   @unique
-  /// Current wizard step: section|title|company|location|workplace|employment|level|salary|stack|applyUrl|body|tags|confirm
+  /// Current flow step: 'paste' (awaiting the pasted raw job text) or
+  /// 'confirm' (parsed draft shown — awaiting ✅ Publish / 📝 Draft / 🔄 Section)
   step        String
-  /// Job fields collected so far (JobIntakeSpec-compatible JSON)
+  /// Parsed job fields (JobIntakeSpec-compatible JSON) + parser guesses
   draft       Json
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
-}
-
-/// Personal Discord webhook for premium job alerts (user pastes a webhook URL
-/// from their own server). The URL is AES-256-GCM encrypted at rest.
-model DiscordWebhook {
-  id        String   @id @default(cuid())
-  userId    String   @unique
-  /// Encrypted webhook URL — never stored in plaintext
-  urlEnc    String
-  /// Friendly reminder of where this webhook points, e.g. "My private server"
-  label     String?
-  notificationsEnabled Boolean @default(true)
-  createdAt DateTime @default(now())
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@index([userId])
 }
 
 /// Per-post × per-channel delivery ledger. The unique triple
@@ -306,9 +290,9 @@ model DiscordWebhook {
 model NotificationLog {
   id        String    @id @default(cuid())
   postId    String
-  /// "email" | "telegram" | "discord"
+  /// "email" | "telegram" (legacy "discord" rows age out via retries)
   channel   String
-  /// Email address, Telegram chat id, or masked Discord webhook
+  /// Email address or Telegram chat id
   recipient String
   userId    String?
   /// "pending" | "sent" | "failed" | "skipped"
@@ -330,7 +314,8 @@ model NotificationLog {
 /// feed fetched, premium granted, …) — used for observability and rate audits.
 model IngestionLog {
   id        String   @id @default(cuid())
-  /// "telegram" | "discord" | "worker-feed" | "web" | "worker-stats"
+  /// "telegram" | "worker-feed" | "web" | "worker-stats"
+  /// (legacy rows may still carry "discord" from before the channel was dropped)
   source    String
   action    String
   ok        Boolean  @default(true)

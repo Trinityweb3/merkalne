@@ -35,21 +35,12 @@ const botEnvSchema = z.object({
     check: (v) => /^[A-Za-z0-9_]{4,32}$/.test(v),
     message: 'TELEGRAM_BOT_USERNAME must be the bare @BotFather name, e.g. merklane_admin_bot',
   }),
-  // --- Telegram: admin intake bot (job composer wizard + admin commands).
-  //     Separate token from a SECOND @BotFather bot; webhook:
+  // --- Telegram: admin intake bot (bulk-paste job composer + admin
+  //     commands). Separate token from a SECOND @BotFather bot; webhook:
   //     /api/webhooks/telegram-admin. Uses the same TELEGRAM_ADMIN_USER_IDS
   //     allowlist as the notifier's admin commands.
   TELEGRAM_ADMIN_BOT_TOKEN: optionalStr(1),
   TELEGRAM_ADMIN_WEBHOOK_SECRET: optionalStr(16),
-
-  // --- Discord ingestion + alerts ------------------------------------------
-  DISCORD_APPLICATION_ID: optionalStr(1),
-  DISCORD_BOT_PUBLIC_KEY: optionalStr(64, {
-    check: (v) => /^[0-9a-fA-F]{64}$/.test(v),
-    message: 'DISCORD_BOT_PUBLIC_KEY must be the 64-char hex key from the Discord developer portal',
-  }),
-  DISCORD_BOT_TOKEN: optionalStr(1),
-  DISCORD_ADMIN_USER_IDS: optionalStr(1),
 
   // --- Worker (ingestion feeds + premium dispatch) ---------------------------
   WORKER_ENABLED: z.preprocess(
@@ -139,16 +130,6 @@ export function telegramDeepLink(path = ''): string {
   return `https://t.me/${bot}${path ? `?start=${path}` : ''}`
 }
 
-/** Discord slash-command ingestion is fully configured. */
-export function discordIngestionEnabled(): boolean {
-  return Boolean(botEnv.DISCORD_APPLICATION_ID && botEnv.DISCORD_BOT_PUBLIC_KEY)
-}
-
-/** Discord slash-command registration (scripts/register-discord-commands.ts). */
-export function discordRegistrationEnabled(): boolean {
-  return Boolean(discordIngestionEnabled() && botEnv.DISCORD_BOT_TOKEN)
-}
-
 /** External feed URLs the worker ingests jobs from. */
 export function ingestFeedUrls(): string[] {
   return botEnv.INGEST_FEED_URLS
@@ -157,19 +138,10 @@ export function ingestFeedUrls(): string[] {
     .filter(Boolean)
 }
 
-/** Admin allowlists, parsed once. */
+/** Admin allowlist, parsed once. */
 export function telegramAdminIds(): Set<string> {
   return new Set(
     (botEnv.TELEGRAM_ADMIN_USER_IDS ?? '')
-      .split(/[,\s]+/)
-      .map((s) => s.trim())
-      .filter(Boolean),
-  )
-}
-
-export function discordAdminIds(): Set<string> {
-  return new Set(
-    (botEnv.DISCORD_ADMIN_USER_IDS ?? '')
       .split(/[,\s]+/)
       .map((s) => s.trim())
       .filter(Boolean),

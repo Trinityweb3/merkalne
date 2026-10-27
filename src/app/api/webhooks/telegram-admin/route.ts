@@ -21,6 +21,7 @@ import {
   revokePremium,
   type JobIntakeSpec,
 } from '@/lib/bots/intake'
+import { parseBulkJobText } from '@/lib/bots/bulk-parse'
 import { POST_SECTIONS, SECTION_META } from '@/lib/constants'
 
 /**
@@ -30,14 +31,16 @@ import { POST_SECTIONS, SECTION_META } from '@/lib/constants'
  * a different bot from @BotFather than the user-facing notifier). The split:
  *
  *   notifier bot (TELEGRAM_BOT_TOKEN)          admin intake bot (this route)
- *   ─ premium alert DMs (worker)               ─ step-by-step job composer
- *   ─ /start account linking                   ─ inline-button wizard
+ *   ─ premium alert DMs (worker)               ─ bulk-paste job composer
+ *   ─ /start account linking                   ─ inline-button confirmation
  *   ─ /alerts on|off · /unlink · /whoami       ─ /jobs /publish /stats /grant
  *
- * Wizard (state machine persisted in TelegramAdminState, one draft per admin):
- *   section ▸ title ▸ company ▸ location ▸ workplace ▸ employment ▸ level ▸
- *   salary ▸ stack ▸ applyUrl ▸ body ▸ tags ▸ confirm(✅ publish / 📝 draft)
- *   — every optional step has a ⏭ Skip button, every screen a ❌ Cancel.
+ * Bulk-paste composer (state in TelegramAdminState, one draft per admin):
+ *   ➕ Add job → paste the RAW job text (any format) → the parser extracts
+ *   Title / Company / URL / Section / Body / level / workplace / … → the
+ *   parsed draft comes back as a confirmation card with inline buttons:
+ *   ✅ Publish · 📝 Save draft · 🔄 Section (re-pick) · ❌ Cancel.
+ *   Pasting again at any point simply re-parses — no step-by-step typing.
  *
  * Security (server-to-server — CSRF not applicable):
  *   • X-Telegram-Bot-Api-Secret-Token must equal TELEGRAM_ADMIN_WEBHOOK_SECRET
@@ -53,11 +56,11 @@ import { POST_SECTIONS, SECTION_META } from '@/lib/constants'
 const HELP_TEXT = [
   '<b>Merklane admin intake bot</b>',
   '',
-  '<b>Job composer wizard</b>',
-  '/start → ➕ Add job — inline buttons step-by-step',
-  '   section ▸ title ▸ company ▸ location ▸ workplace ▸',
-  '   employment ▸ level ▸ salary ▸ stack ▸ applyUrl ▸ body ▸ tags',
-  '   every optional step has ⏭ Skip · /cancel aborts anywhere',
+  '<b>Bulk paste (the fast path)</b>',
+  '➕ Add job → paste the raw job text in any format.',
+  'I parse Title, Company, URL, Section, Body automatically —',
+  'labeled lines ("Company: X") and plain pastes both work.',
+  'Confirm the parsed fields with the inline buttons. Done.',
   '',
   '<b>Power commands</b>',
   '/addjob Title | Company | URL | Section | tags,comma [key=value…]',
@@ -82,158 +85,48 @@ const mainMenu: Keyboard = {
   inline_keyboard: [row(cb('➕ Add job', 'new')), row(cb('📋 Recent jobs', 'jobs'), cb('📊 Stats', 'stats')), row(cb('❓ Help', 'help'))],
 }
 
-const sectionKeyboard: Keyboard = {
+/** Section picker shown while a parsed draft awaits confirmation. */
+const sectionPickerKeyboard: Keyboard = {
   inline_keyboard: [
     row(cb('🧑‍🎓 Intern / Junior', 'sec:intern-junior'), cb('🧑‍💻 Mid / Senior', 'sec:mid-senior')),
     row(cb('🚀 Opportunities', 'sec:opportunities'), cb('📈 Markets', 'sec:markets')),
     row(cb('🔎 Insights', 'sec:insights'), cb('✍️ Blog', 'sec:blog')),
-    row(cb('❌ Cancel', 'abort')),
+    row(cb('⬅️ Back to review', 'back')),
   ],
 }
 
-const cancelKeyboard: Keyboard = { inline_keyboard: [row(cb('❌ Cancel', 'abort'))] }
-const skipKeyboard: Keyboard = { inline_keyboard: [row(cb('⏭ Skip', 'skip'), cb('❌ Cancel', 'abort'))] }
-
-const optionsKeyboard = (prefix: string, options: string[]): Keyboard => ({
-  inline_keyboard: [
-    ...options.map((o) => row(cb(o, `${prefix}:${o}`))),
-    row(cb('⏭ Skip', 'skip'), cb('❌ Cancel', 'abort')),
-  ],
-})
+const pastePromptKeyboard: Keyboard = { inline_keyboard: [row(cb('❌ Cancel', 'abort'))] }
 
 const confirmKeyboard: Keyboard = {
-  inline_keyboard: [row(cb('✅ Publish now', 'pub'), cb('📝 Save draft', 'draft')), row(cb('❌ Cancel', 'abort'))],
+  inline_keyboard: [
+    row(cb('✅ Publish now', 'pub'), cb('📝 Save draft', 'draft')),
+    row(cb('🔄 Change section', 'picksec'), cb('❌ Cancel', 'abort')),
+  ],
 }
 
 // ---------------------------------------------------------------------------
-// Wizard steps
+// Paste / confirm state (TelegramAdminState)
 // ---------------------------------------------------------------------------
 
-type Step =
-  | 'section'
-  | 'title'
-  | 'company'
-  | 'location'
-  | 'workplace'
-  | 'employment'
-  | 'level'
-  | 'salary'
-  | 'stack'
-  | 'applyUrl'
-  | 'body'
-  | 'tags'
-  | 'confirm'
-
-const STEPS: Step[] = [
-  'section',
-  'title',
-  'company',
-  'location',
-  'workplace',
-  'employment',
-  'level',
-  'salary',
-  'stack',
-  'applyUrl',
-  'body',
-  'tags',
-  'confirm',
-]
+type Step = 'paste' | 'confirm'
 
 // NOTE: a type alias (not an interface) — object *type aliases* receive an
 // implicit index signature, which is what makes this assignable to Prisma's
 // InputJsonObject when the draft is persisted to TelegramAdminState.draft.
 type Draft = {
-  section?: string
-  title?: string
-  company?: string
-  location?: string
-  workplace?: string
-  employment?: string
-  level?: string
-  salary?: string
-  stack?: string
-  applyUrl?: string
-  body?: string
-  tags?: string[]
+  spec?: JobIntakeSpec
+  guesses?: string[]
 }
 
 function esc(s: string): string {
   return tgEscape(s)
 }
 
-function sectionLabel(draft: Draft): string {
-  if (!draft.section) return '—'
-  const meta = SECTION_META[draft.section as keyof typeof SECTION_META]
-  return meta ? meta.title : draft.section
+function sectionLabel(section: string | undefined): string {
+  if (!section) return '—'
+  const meta = SECTION_META[section as keyof typeof SECTION_META]
+  return meta ? meta.title : section
 }
-
-/** Text + keyboard for entering `step` (drives both fresh screens and edits). */
-function promptFor(step: Step, draft: Draft): { text: string; keyboard: Keyboard } {
-  const progress = (s: Step): number => STEPS.indexOf(s) + 1
-  switch (step) {
-    case 'section':
-      return { text: `<b>New job — step 1/${STEPS.length}</b>\nWhich section?`, keyboard: sectionKeyboard }
-    case 'title':
-      return {
-        text: `<b>Step ${progress(step)}/${STEPS.length} — title</b>\nSend the job title as plain text (4–160 chars).\n<i>Section:</i> ${sectionLabel(draft)}`,
-        keyboard: cancelKeyboard,
-      }
-    case 'company':
-      return {
-        text: `<b>Step ${progress(step)}/${STEPS.length} — company</b>\nSend the company name, or Skip (editorial posts don't need one).\n<i>Title:</i> ${esc(draft.title ?? '')}`,
-        keyboard: skipKeyboard,
-      }
-    case 'location':
-      return { text: `<b>Step ${progress(step)}/${STEPS.length} — location</b>\nSend the location (e.g. "Remote (EU)", "Berlin / Hybrid"), or Skip.`, keyboard: skipKeyboard }
-    case 'workplace':
-      return { text: `<b>Step ${progress(step)}/${STEPS.length} — workplace</b>\nPick one:`, keyboard: optionsKeyboard('wp', ['Remote', 'Hybrid', 'On-site']) }
-    case 'employment':
-      return { text: `<b>Step ${progress(step)}/${STEPS.length} — employment</b>\nPick one:`, keyboard: optionsKeyboard('emp', ['Full-time', 'Part-time', 'Internship', 'Contract']) }
-    case 'level':
-      return { text: `<b>Step ${progress(step)}/${STEPS.length} — level</b>\nPick one:`, keyboard: optionsKeyboard('lvl', ['Junior', 'Mid', 'Senior', 'Lead']) }
-    case 'salary':
-      return { text: `<b>Step ${progress(step)}/${STEPS.length} — salary</b>\nSend a human-readable range (e.g. "$80k–$120k"), or Skip.`, keyboard: skipKeyboard }
-    case 'stack':
-      return { text: `<b>Step ${progress(step)}/${STEPS.length} — stack</b>\nSend the specialisation summary (e.g. "Rust / Solana"), or Skip.`, keyboard: skipKeyboard }
-    case 'applyUrl':
-      return { text: `<b>Step ${progress(step)}/${STEPS.length} — apply URL</b>\nSend the apply/external link (https://…), or Skip.`, keyboard: skipKeyboard }
-    case 'body':
-      return { text: `<b>Step ${progress(step)}/${STEPS.length} — body</b>\nSend the full description as text (markdown-lite). Skip = auto-generated body.`, keyboard: skipKeyboard }
-    case 'tags':
-      return { text: `<b>Step ${progress(step)}/${STEPS.length} — tags</b>\nSend comma-separated tags (e.g. "rust,solana,remote"), or Skip.`, keyboard: skipKeyboard }
-    case 'confirm':
-      return { text: summaryText(draft), keyboard: confirmKeyboard }
-  }
-}
-
-function nextStep(step: Step): Step | null {
-  const i = STEPS.indexOf(step)
-  return i >= 0 && i < STEPS.length - 1 ? STEPS[i + 1] : null
-}
-
-function summaryText(draft: Draft): string {
-  return [
-    '<b>Review &amp; publish</b>',
-    '',
-    `▸ Section: ${sectionLabel(draft)}`,
-    `▸ Title: ${esc(draft.title ?? '—')}`,
-    `▸ Company: ${draft.company ? esc(draft.company) : '—'}`,
-    `▸ Location: ${draft.location ? esc(draft.location) : '—'}`,
-    `▸ Workplace: ${draft.workplace ?? '—'}`,
-    `▸ Employment: ${draft.employment ?? '—'}`,
-    `▸ Level: ${draft.level ?? '—'}`,
-    `▸ Salary: ${draft.salary ? esc(draft.salary) : '—'}`,
-    `▸ Stack: ${draft.stack ? esc(draft.stack) : '—'}`,
-    `▸ Apply URL: ${draft.applyUrl ? esc(draft.applyUrl) : '—'}`,
-    `▸ Tags: ${draft.tags?.length ? esc(draft.tags.join(', ')) : '—'}`,
-    `▸ Body: ${draft.body ? `${draft.body.length} chars` : 'auto-generated'}`,
-  ].join('\n')
-}
-
-// ---------------------------------------------------------------------------
-// State persistence (TelegramAdminState)
-// ---------------------------------------------------------------------------
 
 async function getState(adminUserId: string): Promise<{ step: Step; draft: Draft } | null> {
   const row = await db.telegramAdminState.findUnique({ where: { adminUserId } })
@@ -268,113 +161,55 @@ function edit(chatId: string | number, messageId: number | undefined, html: stri
 }
 
 // ---------------------------------------------------------------------------
-// Wizard step processors
+// Confirmation card
 // ---------------------------------------------------------------------------
 
-function validateTextStep(step: Step, text: string): { ok: boolean; message?: string } {
-  const t = text.trim()
-  switch (step) {
-    case 'title':
-      if (t.length < 4 || t.length > 160) return { ok: false, message: `Title must be 4–160 characters (got ${t.length}). Try again:` }
-      return { ok: true }
-    case 'company':
-      if (t.length > 120) return { ok: false, message: 'Company is too long (max 120). Try again:' }
-      return { ok: true }
-    case 'location':
-      if (t.length > 120) return { ok: false, message: 'Location is too long (max 120). Try again:' }
-      return { ok: true }
-    case 'salary':
-      if (t.length > 80) return { ok: false, message: 'Salary is too long (max 80). Try again:' }
-      return { ok: true }
-    case 'stack':
-      if (t.length > 160) return { ok: false, message: 'Stack is too long (max 160). Try again:' }
-      return { ok: true }
-    case 'applyUrl': {
-      try {
-        const u = new URL(t)
-        if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new Error('bad protocol')
-        return { ok: true }
-      } catch {
-        return { ok: false, message: 'That is not a valid http(s) URL. Send the link again, or ⏭ Skip:' }
-      }
-    }
-    case 'body':
-      if (t.length > 50_000) return { ok: false, message: 'Body is too long (max 50 000 chars). Send a shorter version:' }
-      return { ok: true }
-    case 'tags': {
-      const tags = t.split(',').map((s) => s.trim()).filter(Boolean)
-      if (tags.length > 12) return { ok: false, message: 'Max 12 tags. Send fewer, comma-separated:' }
-      if (tags.some((tag) => tag.length > 40)) return { ok: false, message: 'Each tag must be ≤ 40 chars. Try again:' }
-      return { ok: true }
-    }
-    default:
-      return { ok: false, message: 'This step uses the buttons below — pick one (or /cancel).' }
-  }
-}
+const PASTE_PROMPT = [
+  '<b>📋 Paste the job posting</b>',
+  '',
+  'Send the raw text in any format — forwarded posts, "Company: X" style',
+  'labels, or just a plain description all work. I will extract the title,',
+  'company, apply URL, section, salary, level and body automatically and',
+  'show you the parsed result for confirmation.',
+].join('\n')
 
-function applyTextStep(draft: Draft, step: Step, text: string): Draft {
-  const t = text.trim()
-  const next = { ...draft }
-  switch (step) {
-    case 'title': next.title = t; break
-    case 'company': next.company = t; break
-    case 'location': next.location = t; break
-    case 'salary': next.salary = t; break
-    case 'stack': next.stack = t; break
-    case 'applyUrl': next.applyUrl = t; break
-    case 'body': next.body = t; break
-    case 'tags': next.tags = t.split(',').map((s) => s.trim()).filter(Boolean).slice(0, 12); break
+function summaryText(spec: JobIntakeSpec, guesses: string[]): string {
+  const lines = [
+    '<b>Parsed — review &amp; publish</b>',
+    '',
+    `▸ Section: ${sectionLabel(spec.section)}`,
+    `▸ Title: ${esc(spec.title)}`,
+    `▸ Company: ${spec.company ? esc(spec.company) : '—'}`,
+    `▸ Location: ${spec.location ? esc(spec.location) : '—'}`,
+    `▸ Workplace: ${spec.workplace ?? '—'}`,
+    `▸ Employment: ${spec.employment ?? '—'}`,
+    `▸ Level: ${spec.level ?? '—'}`,
+    `▸ Salary: ${spec.salary ? esc(spec.salary) : '—'}`,
+    `▸ Stack: ${spec.stack ? esc(spec.stack) : '—'}`,
+    `▸ Apply URL: ${spec.applyUrl ? esc(spec.applyUrl) : '—'}`,
+    `▸ Tags: ${spec.tags.length > 0 ? esc(spec.tags.join(', ')) : '—'}`,
+    `▸ Body: ${spec.body ? `${spec.body.length} chars` : 'auto-generated'}`,
+  ]
+  if (guesses.length > 0) {
+    lines.push('', '<i>Parser guesses (check these):</i>')
+    for (const g of guesses) lines.push(`<i>⚠️ ${esc(g)}</i>`)
   }
-  return next
-}
-
-async function advance(
-  adminUserId: string,
-  chatId: string,
-  from: Step,
-  draft: Draft,
-  editMessageId?: number,
-): Promise<void> {
-  const next = nextStep(from)
-  if (!next) return
-  await setState(adminUserId, next, draft)
-  const prompt = promptFor(next, draft)
-  // Button-driven steps swap the keyboard in place (edit); text-input steps
-  // send a fresh message so the admin can type immediately.
-  if (editMessageId && (next === 'confirm' || next === 'section')) {
-    await edit(chatId, editMessageId, prompt.text, prompt.keyboard)
-  } else {
-    await send(chatId, prompt.text, prompt.keyboard)
-  }
+  lines.push('', '<i>Send a new paste any time to re-parse from scratch.</i>')
+  return lines.join('\n')
 }
 
 async function publishDraft(
   adminUserId: string,
   chatId: string,
-  draft: Draft,
+  spec: JobIntakeSpec,
   publish: boolean,
   fromId: string,
 ): Promise<void> {
-  const spec: JobIntakeSpec = {
-    title: draft.title!,
-    company: draft.company,
-    applyUrl: draft.applyUrl,
-    section: draft.section as JobIntakeSpec['section'],
-    tags: draft.tags ?? [],
-    location: draft.location,
-    workplace: draft.workplace,
-    employment: draft.employment,
-    level: draft.level,
-    salary: draft.salary,
-    stack: draft.stack,
-    body: draft.body,
-    publish,
-  }
-  const result = await createJobFromSpec(spec, { source: 'telegram', actor: `tg-admin:${fromId}` })
+  const result = await createJobFromSpec({ ...spec, publish }, { source: 'telegram', actor: `tg-admin:${fromId}` })
   await clearState(adminUserId)
 
   if (!result.ok) {
-    await send(chatId, `⚠️ ${result.message}\nDraft discarded — start again with /start.`)
+    await send(chatId, `⚠️ ${result.message}\nDraft discarded — /start to begin again.`)
     return
   }
   const url = `${botEnv.APP_URL}/${result.post.section}/${result.post.slug}`
@@ -443,8 +278,8 @@ async function handleCallback(update: TelegramUpdate, fromId: string, chatId: st
     return
   }
   if (data === 'new') {
-    await setState(fromId, 'section', {})
-    await edit(chatId, messageId, promptFor('section', {}).text, sectionKeyboard)
+    await setState(fromId, 'paste', {})
+    await edit(chatId, messageId, PASTE_PROMPT, pastePromptKeyboard)
     return
   }
   if (data === 'abort') {
@@ -452,42 +287,46 @@ async function handleCallback(update: TelegramUpdate, fromId: string, chatId: st
     await edit(chatId, messageId, '❌ Cancelled. Nothing was saved.', mainMenu)
     return
   }
+
+  // --- everything below needs a parsed draft awaiting confirmation ----------
+  if (data === 'back') {
+    if (!state || state.step !== 'confirm' || !state.draft.spec) {
+      await edit(chatId, messageId, PASTE_PROMPT, pastePromptKeyboard)
+      return
+    }
+    await edit(chatId, messageId, summaryText(state.draft.spec, state.draft.guesses ?? []), confirmKeyboard)
+    return
+  }
+  if (data === 'picksec') {
+    if (!state || state.step !== 'confirm' || !state.draft.spec) {
+      await telegramAnswerCallbackQuery(cq.id, 'Nothing to re-section — paste a job first.', { token: TOKEN, showAlert: true })
+      return
+    }
+    await edit(chatId, messageId, `Pick the section for:\n<b>${esc(state.draft.spec.title)}</b>`, sectionPickerKeyboard)
+    return
+  }
   if (data.startsWith('sec:')) {
     const section = data.slice(4)
     if (!(POST_SECTIONS as readonly string[]).includes(section)) {
-      await send(chatId, 'Unknown section — start again with /start.')
+      await telegramAnswerCallbackQuery(cq.id, 'Unknown section.', { token: TOKEN, showAlert: true })
       return
     }
-    await advance(fromId, chatId, 'section', { section }, messageId)
-    return
-  }
-  if (data.startsWith('wp:') || data.startsWith('emp:') || data.startsWith('lvl:')) {
-    if (!state || !['workplace', 'employment', 'level'].includes(state.step)) {
-      await telegramAnswerCallbackQuery(cq.id, 'Wizard expired — /start to begin again.', { token: TOKEN, showAlert: true })
+    if (!state || state.step !== 'confirm' || !state.draft.spec) {
+      await telegramAnswerCallbackQuery(cq.id, 'Nothing to re-section — paste a job first.', { token: TOKEN, showAlert: true })
       return
     }
-    const value = data.split(':')[1]
-    const draft = { ...state.draft }
-    if (state.step === 'workplace') draft.workplace = value
-    if (state.step === 'employment') draft.employment = value
-    if (state.step === 'level') draft.level = value
-    await advance(fromId, chatId, state.step, draft)
-    return
-  }
-  if (data === 'skip') {
-    if (!state) {
-      await telegramAnswerCallbackQuery(cq.id, 'Wizard expired — /start to begin again.', { token: TOKEN, showAlert: true })
-      return
-    }
-    await advance(fromId, chatId, state.step, state.draft)
+    const spec = { ...state.draft.spec, section: section as JobIntakeSpec['section'] }
+    const guesses = (state.draft.guesses ?? []).filter((g) => !g.startsWith('Section'))
+    await setState(fromId, 'confirm', { spec, guesses })
+    await edit(chatId, messageId, summaryText(spec, guesses), confirmKeyboard)
     return
   }
   if (data === 'pub' || data === 'draft') {
-    if (!state || !state.draft.title || !state.draft.section) {
-      await telegramAnswerCallbackQuery(cq.id, 'Wizard expired — /start to begin again.', { token: TOKEN, showAlert: true })
+    if (!state || state.step !== 'confirm' || !state.draft.spec) {
+      await telegramAnswerCallbackQuery(cq.id, 'Nothing parsed yet — tap ➕ Add job and paste a job first.', { token: TOKEN, showAlert: true })
       return
     }
-    await publishDraft(fromId, chatId, state.draft, data === 'pub', fromId)
+    await publishDraft(fromId, chatId, state.draft.spec, data === 'pub', fromId)
     return
   }
   await telegramAnswerCallbackQuery(cq.id, 'Unknown button — /start', { token: TOKEN, showAlert: true })
@@ -497,7 +336,7 @@ async function handleMessage(update: TelegramUpdate, fromId: string, chatId: str
   const text = update.message!.text ?? ''
   const parsedCommand = parseTelegramCommand(text)
 
-  // Commands always win over wizard input.
+  // Commands always win over paste input.
   if (parsedCommand) {
     const { command, args } = parsedCommand
     switch (command) {
@@ -587,21 +426,21 @@ async function handleMessage(update: TelegramUpdate, fromId: string, chatId: str
     return
   }
 
-  // Non-command text → wizard step input.
+  // Non-command text → the bulk paste.
   if (!isAdmin) return void (await deny(chatId))
   const state = await getState(fromId)
-  if (!state) {
-    await send(chatId, 'Send /start to open the admin menu.', mainMenu)
+  if (!state || (state.step !== 'paste' && state.step !== 'confirm')) {
+    await send(chatId, 'Send /start to open the admin menu, or ➕ Add job to paste a job.', mainMenu)
     return
   }
 
-  const check = validateTextStep(state.step, text)
-  if (!check.ok) {
-    await send(chatId, `⚠️ ${check.message}`)
+  const parsed = parseBulkJobText(text)
+  if (!parsed.ok) {
+    await send(chatId, `⚠️ ${parsed.message}`)
     return
   }
-  const draft = applyTextStep(state.draft, state.step, text)
-  await advance(fromId, chatId, state.step, draft)
+  await setState(fromId, 'confirm', { spec: parsed.job.spec, guesses: parsed.job.guesses })
+  await send(chatId, summaryText(parsed.job.spec, parsed.job.guesses), confirmKeyboard)
 }
 
 async function deny(chatId: string): Promise<void> {

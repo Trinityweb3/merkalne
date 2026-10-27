@@ -1,6 +1,7 @@
+/// <reference types="bun-types" />
 /**
  * E2E test of the ADMIN INTAKE BOT webhook (/api/webhooks/telegram-admin)
- * against the running dev server — full wizard state machine + security gates.
+ * against the running dev server — bulk-paste composer + security gates.
  *
  * No real bot token is configured: replies go through the console fallback,
  * which lets us assert the full flow locally. DB state is asserted via Prisma.
@@ -85,60 +86,74 @@ async function main() {
   })
   ok('invalid JSON → 400', badJson.status === 400, `got ${badJson.status}`)
 
-  console.log('— wizard: /start → menu → new → section → … —')
-  await post(msg('/start'))
+  console.log('— bulk paste: ➕ Add job → paste labeled text → parsed → ✅ Publish —')
   await post(cbq('new'))
-  ok('after ➕ Add job → step=section', (await stateOf())?.step === 'section')
+  ok('state step = paste after ➕ Add job', (await stateOf())?.step === 'paste', JSON.stringify(await stateOf()))
 
-  await post(cbq('sec:blog'))
-  let st = await stateOf()
-  ok('after sec:blog → step=title, draft.section=blog', st?.step === 'title' && st?.draft?.section === 'blog', JSON.stringify(st))
+  // A paste with mixed labeled + unlabeled lines, exactly like a forwarded post.
+  const labeledPaste = [
+    'Company: Acme Corp',
+    'Title: Senior Wizard Test Engineer',
+    'URL: https://acme.example/apply',
+    'Salary: $80k–$120k',
+    'Type: Full-time',
+    'Workplace: Remote',
+    'Description: Build the parsing pipeline for the admin bot and ship it.',
+  ].join('\n')
+  const pasted = await post(msg(labeledPaste))
+  ok('paste accepted (handled)', pasted.body?.data?.handled === true, JSON.stringify(pasted.body))
 
-  const badTitle = await post(msg('No'))
-  ok('title validation rejects <4 chars (stays on title)', (await stateOf())?.step === 'title', JSON.stringify(badTitle.body?.data))
+  const st = await stateOf()
+  ok('state step = confirm after paste', st?.step === 'confirm', JSON.stringify(st?.step))
+  const spec = (st?.draft?.spec ?? {}) as Record<string, unknown>
+  ok('parsed title from "Title:" label', spec.title === 'Senior Wizard Test Engineer', JSON.stringify(spec.title))
+  ok('parsed company from "Company:" label', spec.company === 'Acme Corp', JSON.stringify(spec.company))
+  ok('parsed applyUrl from "URL:" label', spec.applyUrl === 'https://acme.example/apply', JSON.stringify(spec.applyUrl))
+  ok('parsed salary from "Salary:" label', spec.salary === '$80k–$120k', JSON.stringify(spec.salary))
+  ok('parsed employment from "Type:" label', spec.employment === 'Full-time', JSON.stringify(spec.employment))
+  ok('parsed workplace from "Workplace:" label', spec.workplace === 'Remote', JSON.stringify(spec.workplace))
+  ok('parsed body from "Description:" label', typeof spec.body === 'string' && spec.body.includes('parsing pipeline'), JSON.stringify(spec.body))
+  ok('section inferred mid-senior (senior + job labels)', spec.section === 'mid-senior', JSON.stringify(spec.section))
+  ok('level guessed Senior', spec.level === 'Senior', JSON.stringify(spec.level))
 
-  await post(msg('Senior Wizard Test Engineer'))
-  ok('title accepted → step=company', (await stateOf())?.step === 'company')
-
-  await post(msg('Merklane Test Lab'))
-  ok('company accepted → step=location', (await stateOf())?.step === 'location')
-
-  await post(cbq('skip')) // location → workplace
-  ok('skip location → step=workplace', (await stateOf())?.step === 'workplace')
-
-  await post(cbq('wp:Remote'))
-  ok('wp:Remote → step=employment + draft.workplace=Remote', (await stateOf())?.step === 'employment' && (await stateOf())?.draft?.workplace === 'Remote')
-
-  await post(cbq('emp:Full-time'))
-  ok('emp:Full-time → step=level', (await stateOf())?.step === 'level')
-
-  await post(cbq('lvl:Senior'))
-  st = await stateOf()
-  ok('lvl:Senior → step=salary + draft.level=Senior', st?.step === 'salary' && st?.draft?.level === 'Senior', JSON.stringify(st))
-
-  await post(msg('$90k–$140k'))
-  ok('salary accepted → step=stack', (await stateOf())?.step === 'stack')
-
-  await post(cbq('skip')) // stack → applyUrl
-  await post(cbq('skip')) // applyUrl → body
-  await post(cbq('skip')) // body → tags
-  ok('three skips → step=tags', (await stateOf())?.step === 'tags')
-
-  await post(msg('wizard,test,e2e'))
-  st = await stateOf()
-  ok('tags accepted → step=confirm + 3 tags', st?.step === 'confirm' && (st?.draft?.tags as string[] | undefined)?.length === 3, JSON.stringify(st))
-
-  console.log('— publish —')
   const before = await db.post.count({ where: { title: 'Senior Wizard Test Engineer' } })
   await post(cbq('pub'))
   const created = await db.post.findFirst({ where: { title: 'Senior Wizard Test Engineer' }, orderBy: { createdAt: 'desc' } })
   ok('✅ Publish created the post (published)', (await db.post.count({ where: { title: 'Senior Wizard Test Engineer' } })) === before + 1 && created?.status === 'published', `status=${created?.status}`)
-  ok('wizard state cleared after publish', (await stateOf()) === null)
-  ok('post carries wizard fields', created?.section === 'blog' && created?.workplace === 'Remote' && created?.employment === 'Full-time' && created?.level === 'Senior' && created?.location === null, JSON.stringify({ section: created?.section, workplace: created?.workplace, employment: created?.employment, level: created?.level }))
-  ok('body auto-generated when skipped', Boolean(created?.body && created.body.length > 50), `len=${created?.body?.length}`)
+  ok('state cleared after publish', (await stateOf()) === null)
+  ok('post carries parsed fields', created?.section === 'mid-senior' && created?.workplace === 'Remote' && created?.employment === 'Full-time' && created?.applyUrl === 'https://acme.example/apply', JSON.stringify({ section: created?.section, workplace: created?.workplace, employment: created?.employment }))
+  ok('body captured from the paste', Boolean(created?.body && created.body.includes('parsing pipeline')), `len=${created?.body?.length}`)
+
+  console.log('— bulk paste: unlabeled paste → section re-pick via 🔄 —')
+  await post(cbq('new'))
+  const plainPaste = [
+    'Junior Rust Dev at Parity',
+    'https://parity.example/jobs',
+    'Remote (EU)',
+    'Write CLI tools in Rust for the polkadot ecosystem.',
+  ].join('\n')
+  await post(msg(plainPaste))
+  const st2 = await stateOf()
+  const spec2 = (st2?.draft?.spec ?? {}) as Record<string, unknown>
+  ok('unlabeled title from first line', spec2.title === 'Junior Rust Dev', JSON.stringify(spec2.title))
+  ok('"at" split extracted the company', spec2.company === 'Parity', JSON.stringify(spec2.company))
+  ok('first URL became applyUrl', spec2.applyUrl === 'https://parity.example/jobs', JSON.stringify(spec2.applyUrl))
+  ok('Remote (EU) → workplace Remote + location EU', spec2.workplace === 'Remote' && spec2.location === 'EU', JSON.stringify({ workplace: spec2.workplace, location: spec2.location }))
+  ok('junior keyword → section intern-junior', spec2.section === 'intern-junior', JSON.stringify(spec2.section))
+  ok('level guessed Junior', spec2.level === 'Junior', JSON.stringify(spec2.level))
+
+  await post(cbq('sec:mid-senior'))
+  const st3 = await stateOf()
+  const spec3 = (st3?.draft?.spec ?? {}) as Record<string, unknown>
+  ok('🔄 section change applied (mid-senior)', st3?.step === 'confirm' && spec3.section === 'mid-senior', JSON.stringify(spec3.section))
+
+  await post(msg('/cancel'))
+  ok('cancel clears the draft', (await stateOf()) === null)
 
   console.log('— power commands —')
-  const add = await post(msg('/addjob Power Command Post | Acme Corp | https://acme.example/apply | intern-junior | rust,cli'))
+  // NOTE: a DIFFERENT apply URL than the paste above — intake dedupes on
+  // (source, applyUrl), so reusing it would skip creation as a duplicate.
+  const add = await post(msg('/addjob Power Command Post | Acme Corp | https://acme.example/careers/power | intern-junior | rust,cli'))
   ok('/addjob one-liner → handled', add.body?.data?.handled === true, JSON.stringify(add.body))
   const power = await db.post.findFirst({ where: { title: 'Power Command Post' }, orderBy: { createdAt: 'desc' } })
   ok('/addjob created draft in intern-junior', power?.section === 'intern-junior' && power?.status === 'draft', `section=${power?.section} status=${power?.status}`)
@@ -155,12 +170,17 @@ async function main() {
   await post(msg('/cancel'))
 
   console.log(`\n${failures === 0 ? 'ALL PASS' : failures + ' FAILURES'}`)
+  // cleanup
+  await db.post.deleteMany({ where: { title: { in: ['Senior Wizard Test Engineer', 'Power Command Post'] } } })
+  await db.user.deleteMany({ where: { email: 'admin-bot-e2e@test.local' } })
+  await db.telegramAdminState.deleteMany({})
   await db.$disconnect()
   process.exit(failures === 0 ? 0 : 1)
 }
 
 main().catch(async (err) => {
   console.error(err)
+  await db.telegramAdminState.deleteMany({})
   await db.$disconnect()
   process.exit(1)
 })

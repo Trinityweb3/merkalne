@@ -165,7 +165,9 @@ export async function relatedPosts(post: { id: string; section: string }, take =
   })
 }
 
-export function serializePost(post: PublicPost) {
+/** Serialize the public post shape; `snippet` (the translated card excerpt,
+ *  filled by localizePostList) rides along when present. */
+export function serializePost(post: PublicPost & { snippet?: string }) {
   // `translations` (the machine-translation cache) is internal — it is never
   // shipped to the client; localized serving happens in server components.
   const { translations: _translations, ...rest } = post

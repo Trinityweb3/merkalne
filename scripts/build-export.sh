@@ -117,6 +117,41 @@ assert_file_contains "${ROOT}/.env.example" 'TRANSLATION_GLOSSARY_PATH' \
   ".env.example: glossary path variable documented"
 assert_file_contains "${ROOT}/docker-compose.yml" 'TRANSLATION_GLOSSARY_PATH' \
   "docker-compose: glossary path passed to the app service"
+# --- Bulk-paste admin bot (replaces the 13-step wizard) ----------------------
+[ -f "${ROOT}/src/lib/bots/bulk-parse.ts" ] && echo "  [ok]   bulk-paste parser present (src/lib/bots/bulk-parse.ts)" \
+  || { echo "  [FAIL] src/lib/bots/bulk-parse.ts missing"; fail=1; }
+assert_file_contains "${ROOT}/src/app/api/webhooks/telegram-admin/route.ts" 'parseBulkJobText' \
+  "admin webhook route uses the bulk-paste parser"
+# --- Discord removal (clean sweep) -------------------------------------------
+[ ! -f "${ROOT}/src/lib/bots/discord.ts" ] && echo "  [ok]   discord.ts removed" \
+  || { echo "  [FAIL] src/lib/bots/discord.ts still exists"; fail=1; }
+[ ! -d "${ROOT}/src/app/api/webhooks/discord" ] && echo "  [ok]   discord webhook route removed" \
+  || { echo "  [FAIL] src/app/api/webhooks/discord still exists"; fail=1; }
+[ ! -d "${ROOT}/src/app/api/bots/discord" ] && echo "  [ok]   discord webhook API removed" \
+  || { echo "  [FAIL] src/app/api/bots/discord still exists"; fail=1; }
+[ ! -f "${ROOT}/src/lib/bots/secretbox.ts" ] && echo "  [ok]   secretbox.ts removed (was Discord-only)" \
+  || { echo "  [FAIL] src/lib/bots/secretbox.ts still exists"; fail=1; }
+if grep -rq "DISCORD_" "${ROOT}/.env.example" "${ROOT}/docker-compose.yml" 2>/dev/null; then
+  echo "  [FAIL] DISCORD_* variables still referenced in .env.example / docker-compose.yml"
+  fail=1
+else
+  echo "  [ok]   no DISCORD_* variables in .env.example / docker-compose.yml"
+fi
+[ -f "${ROOT}/prisma/migrations/0005_drop_discord/migration.sql" ] && echo "  [ok]   migration 0005_drop_discord present" \
+  || { echo "  [FAIL] prisma/migrations/0005_drop_discord/migration.sql missing"; fail=1; }
+if grep -q 'network: host' "${ROOT}/docker-compose.yml"; then
+  echo "  [FAIL] docker-compose still uses network: host (VPS has native internet)"
+  fail=1
+else
+  echo "  [ok]   docker-compose free of network: host (VPS-native networking)"
+fi
+# --- Translation pipeline (title + snippet + body + tags) --------------------
+assert_file_contains "${ROOT}/src/lib/localize.ts" 'snippet?: string' \
+  "localize.ts: snippet field in the translation cache"
+assert_file_contains "${ROOT}/src/lib/localize.ts" 'tags?: string[]' \
+  "localize.ts: tags in the translation cache"
+assert_file_contains "${ROOT}/src/lib/translate.ts" 'chunkTimeoutMs' \
+  "translate.ts: adaptive per-chunk timeout (bodies no longer time out)"
 # Run the same stale-merge guard the Docker build runs — the sandbox tree
 # itself must be clean before it is bundled.
 if sh "${ROOT}/docker/check-app-tree.sh" >/dev/null 2>&1; then
@@ -234,6 +269,22 @@ assert_file_contains "${VERIFY_DIR}/merklane/src/lib/translate.ts" 'protectText'
   || { echo "  [FAIL] archive: config/translation-glossary.example.json MISSING"; archive_fail=1; }
 assert_file_contains "${VERIFY_DIR}/merklane/docker-compose.yml" 'TELEGRAM_ADMIN_BOT_TOKEN' \
   "archive: docker-compose passes the admin bot token"
+[ -f "${VERIFY_DIR}/merklane/src/lib/bots/bulk-parse.ts" ] && echo "  [ok]   archive: bulk-parse.ts present" \
+  || { echo "  [FAIL] archive: src/lib/bots/bulk-parse.ts MISSING"; archive_fail=1; }
+[ -f "${VERIFY_DIR}/merklane/prisma/migrations/0005_drop_discord/migration.sql" ] && echo "  [ok]   archive: migration 0005_drop_discord present" \
+  || { echo "  [FAIL] archive: prisma/migrations/0005_drop_discord MISSING"; archive_fail=1; }
+if [ -d "${VERIFY_DIR}/merklane/src/app/api/webhooks/discord" ] || [ -d "${VERIFY_DIR}/merklane/src/app/api/bots/discord" ]; then
+  echo "  [FAIL] archive: Discord routes still present (stale bundle!)"
+  archive_fail=1
+else
+  echo "  [ok]   archive: no Discord routes (clean sweep verified inside the tarball)"
+fi
+if grep -q 'network: host' "${VERIFY_DIR}/merklane/docker-compose.yml"; then
+  echo "  [FAIL] archive: docker-compose.yml still has network: host"
+  archive_fail=1
+else
+  echo "  [ok]   archive: compose is VPS-native (no host networking)"
+fi
 assert_file_contains "${VERIFY_DIR}/merklane/Dockerfile" 'COPY --from=builder --chown=merklane:merklane /app/prisma ./prisma' \
   "archive: Dockerfile prisma COPY intact"
 assert_file_contains "${VERIFY_DIR}/merklane/Dockerfile" 'COPY --from=builder --chown=merklane:merklane /app/node_modules ./node_modules' \

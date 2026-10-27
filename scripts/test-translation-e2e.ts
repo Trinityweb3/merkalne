@@ -8,6 +8,8 @@
  */
 import { PrismaClient } from '@prisma/client'
 
+import { snippet as makeSnippet } from '../src/lib/utils'
+
 const ORIGIN = (process.env.BASE_URL ?? 'http://localhost:3000').replace(/\/+$/, '')
 const MOCK_PORT = 5001
 const db = new PrismaClient()
@@ -53,7 +55,9 @@ async function main() {
   const TITLE = 'Translation Pipeline Test Post'
   const BODY = 'This body exists to prove the full-granularity translation path works end to end.'
 
-  // Clean slate
+  // Clean slate: only OUR posts in markets → deterministic translate-call
+  // counts (the list localizes title + snippet + tags for every post).
+  await db.post.deleteMany({ where: { section: 'markets' } })
   await db.post.deleteMany({ where: { OR: [{ slug: SLUG }, { title: TITLE }] } })
 
   const post = await db.post.create({
@@ -63,6 +67,7 @@ async function main() {
       section: 'markets',
       status: 'published',
       body: BODY,
+      tags: 'rust,remote',
       author: { connectOrCreate: { where: { email: 'translate-e2e@test.local' }, create: { email: 'translate-e2e@test.local', passwordHash: 'x', name: 'E2E' } } },
     },
   })
@@ -70,15 +75,18 @@ async function main() {
 
   console.log('— 1. list request in ru (cache MISS → mock translate → persist) —')
   const r1 = await fetch(`${ORIGIN}/api/posts?section=markets&locale=ru&limit=50`)
-  const b1 = (await r1.json()) as { data?: { posts?: Array<{ title: string; slug: string }> } }
+  const b1 = (await r1.json()) as { data?: { posts?: Array<{ title: string; slug: string; snippet?: string; tags?: string[] }> } }
   const mine1 = b1.data?.posts?.find((p) => p.slug === SLUG)
   ok('ru list shows translated title', mine1?.title === `[RU] ${TITLE}`, JSON.stringify(mine1?.title))
+  ok('ru list shows translated SNIPPET (card excerpt)', mine1?.snippet === `[RU] ${makeSnippet(BODY)}`, JSON.stringify(mine1?.snippet))
+  ok('ru list shows translated TAGS', JSON.stringify(mine1?.tags) === JSON.stringify(['[ru] rust', '[ru] remote']), JSON.stringify(mine1?.tags))
   ok('mock received exactly one /translate call (batched)', translateCalls === 1, `calls=${translateCalls}`)
 
   const stored = await db.post.findUnique({ where: { id: post.id }, select: { translations: true } })
-  const ruTitle = (stored?.translations as Record<string, { title?: string }> | null)?.ru?.title
-  ok('translation persisted to Post.translations.ru.title', ruTitle === `[RU] ${TITLE}`, JSON.stringify(stored?.translations))
-
+  const ruCache = (stored?.translations as Record<string, { title?: string; snippet?: string; tags?: string[] }> | null)?.ru
+  ok('translation persisted to Post.translations.ru.title', ruCache?.title === `[RU] ${TITLE}`, JSON.stringify(stored?.translations))
+  ok('snippet persisted to Post.translations.ru.snippet', ruCache?.snippet === `[RU] ${makeSnippet(BODY)}`, JSON.stringify(ruCache?.snippet))
+  ok('tags persisted to Post.translations.ru.tags', JSON.stringify(ruCache?.tags) === JSON.stringify(['[RU] rust', '[RU] remote']), JSON.stringify(ruCache?.tags))
   console.log('— 2. second list request (cache HIT — no new translate calls) —')
   const r2 = await fetch(`${ORIGIN}/api/posts?section=markets&locale=ru&limit=50`)
   const b2 = (await r2.json()) as { data?: { posts?: Array<{ title: string; slug: string }> } }
@@ -92,6 +100,13 @@ async function main() {
   const html1 = await page1.text()
   ok('article shows translated title', html1.includes('[RU] Translation Pipeline Test Post'), 'translated title not in HTML')
   ok('article shows translated body', html1.includes('[RU] This body exists'), 'translated body not in HTML')
+  ok(
+    'article shows translated tags',
+    // NOTE: no '#' in the needle — React SSR splits "#"+{tag} into adjacent
+    // text nodes and inserts an HTML comment between them.
+    html1.includes('[ru] rust') && html1.includes('[ru] remote'),
+    'translated tags not in HTML',
+  )
 
   const storedFull = await db.post.findUnique({ where: { id: post.id }, select: { translations: true } })
   const ruFull = (storedFull?.translations as Record<string, { title?: string; body?: string }> | null)?.ru
@@ -105,15 +120,17 @@ async function main() {
 
   console.log('— 5. a different locale (es) is translated independently —')
   const r5 = await fetch(`${ORIGIN}/api/posts?section=markets&locale=es&limit=50`)
-  const b5 = (await r5.json()) as { data?: { posts?: Array<{ title: string; slug: string }> } }
+  const b5 = (await r5.json()) as { data?: { posts?: Array<{ title: string; slug: string; snippet?: string }> } }
   const mine5 = b5.data?.posts?.find((p) => p.slug === SLUG)
   ok('es list shows translated title', mine5?.title === `[ES] ${TITLE}`, JSON.stringify(mine5?.title))
+  ok('es list shows translated snippet', mine5?.snippet === `[ES] ${makeSnippet(BODY)}`, JSON.stringify(mine5?.snippet))
 
   console.log('— 6. English untouched —')
   const r6 = await fetch(`${ORIGIN}/api/posts?section=markets&limit=50`)
-  const b6 = (await r6.json()) as { data?: { posts?: Array<{ title: string; slug: string }> } }
+  const b6 = (await r6.json()) as { data?: { posts?: Array<{ title: string; slug: string; snippet?: string }> } }
   const mine6 = b6.data?.posts?.find((p) => p.slug === SLUG)
   ok('en list keeps the original title', mine6?.title === TITLE, JSON.stringify(mine6?.title))
+  ok('en list ships no snippet override (component derives it from the body)', mine6?.snippet === undefined, JSON.stringify(mine6?.snippet))
 
   console.log('— 7. custom glossary: Web3 jargon survives translation intact —')
   const SLUG2 = 'glossary-e2e-test-post'
@@ -126,16 +143,24 @@ async function main() {
       section: 'markets',
       status: 'published',
       body: 'Yield farming on a Layer 2 DEX with deep liquidity.',
+      tags: 'defi',
       author: { connectOrCreate: { where: { email: 'translate-e2e@test.local' }, create: { email: 'translate-e2e@test.local', passwordHash: 'x', name: 'E2E' } } },
     },
   })
   const r7 = await fetch(`${ORIGIN}/api/posts?section=markets&locale=ru&limit=50`)
-  const b7 = (await r7.json()) as { data?: { posts?: Array<{ title: string; slug: string }> } }
+  const b7 = (await r7.json()) as { data?: { posts?: Array<{ title: string; slug: string; tags?: string[] }> } }
   const mine7 = b7.data?.posts?.find((p) => p.slug === SLUG2)
   ok(
     'glossary terms restored after translation (exact match)',
     mine7?.title === `[RU] ${TITLE2}`,
     JSON.stringify(mine7?.title),
+  )
+  ok(
+    'glossary protects tags too — the term #defi survives translation intact',
+    // The mock prefixes every translated string with "[ru] " — the jargon
+    // term itself must come back UNTRANSLATED ("defi"), not machine-mangled.
+    JSON.stringify(mine7?.tags) === JSON.stringify(['[ru] defi']),
+    JSON.stringify(mine7?.tags),
   )
   const sentQ = Array.isArray(lastTranslateQ) ? lastTranslateQ : [String(lastTranslateQ ?? '')]
   const protectedTitle = sentQ.find((s) => s.includes('hits record'))

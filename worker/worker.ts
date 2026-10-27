@@ -5,8 +5,8 @@
  *                        Remotive public API) into the database as drafts
  *                        (or published when AUTO_PUBLISH_INGESTED_JOBS=true)
  *   2. Premium alerts  — fans out every newly published posting to active
- *                        premium subscribers via email (Resend), Telegram DMs
- *                        and personal Discord webhooks, with retries
+ *                        premium subscribers via email (Resend) and Telegram
+ *                        DMs, with retries
  *   3. Daily stats     — computes the About-page statistics snapshot once per
  *                        UTC day (STATS_SNAPSHOT_UTC_HOUR) with backfill for
  *                        missed days

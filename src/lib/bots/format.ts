@@ -1,7 +1,7 @@
 /**
  * Alert formatters shared by the dispatch worker and the bot command replies.
- * One job posting → Telegram HTML / Discord embed / Resend HTML, all in the
- * Merklane design language.
+ * One job posting → Telegram HTML / Resend HTML, all in the Merklane design
+ * language.
  */
 import { botEnv } from './config'
 
@@ -46,34 +46,6 @@ export function formatTelegramJobAlert(post: AlertPost): string {
   if (post.stack) lines.push(`Stack: ${tgEscape(post.stack)}`)
   lines.push('', `<a href="${postUrl(post)}">View &amp; apply on Merklane</a>`)
   return lines.join('\n')
-}
-
-// ---------------------------------------------------------------------------
-// Discord
-// ---------------------------------------------------------------------------
-
-export function formatDiscordJobAlert(post: AlertPost): {
-  content: string
-  embed: { title: string; url: string; description: string; fields: { name: string; value: string; inline?: boolean }[] }
-} {
-  const fields: { name: string; value: string; inline?: boolean }[] = []
-  if (post.company) fields.push({ name: 'Company', value: post.company, inline: true })
-  if (post.location) fields.push({ name: 'Location', value: post.location, inline: true })
-  if (post.employment) fields.push({ name: 'Type', value: post.employment, inline: true })
-  if (post.level) fields.push({ name: 'Level', value: post.level, inline: true })
-  if (post.salary) fields.push({ name: 'Salary', value: post.salary, inline: true })
-  if (post.stack) fields.push({ name: 'Stack', value: post.stack, inline: false })
-  if (post.applyUrl) fields.push({ name: 'Apply', value: post.applyUrl, inline: false })
-
-  return {
-    content: `🆕 New ${post.section} posting on Merklane`,
-    embed: {
-      title: post.title,
-      url: postUrl(post),
-      description: post.kind ? `**${post.kind}** in \`${post.section}\`` : `In \`${post.section}\``,
-      fields,
-    },
-  }
 }
 
 // ---------------------------------------------------------------------------

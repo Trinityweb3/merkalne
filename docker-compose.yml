@@ -8,11 +8,11 @@
 #   cp .env.example .env  → fill values → docker compose up -d --build
 #
 # PORT BINDING: the app publishes to 127.0.0.1:3000 ONLY — the reverse proxy
-# (Caddy, see deploy/Caddyfile + DEPLOYMENT.md) terminates TLS on 443 and
-# proxies to the loopback port. Docker writes its own iptables rules and does
-# NOT go through UFW, so binding to the loopback interface (not 0.0.0.0) is
-# the reliable way to keep the app off the public internet. If you need direct
-# access without a proxy, change to "3000:3000".
+# (Caddy on the VPS terminates TLS on 443) proxies to the loopback port.
+# Docker writes its own iptables rules and does NOT go through UFW, so
+# binding to the loopback interface (not 0.0.0.0) is the reliable way to
+# keep the app off the public internet. If you need direct access without
+# a proxy, change to "3000:3000".
 # ---------------------------------------------------------------------------
 
 name: merklane
@@ -22,12 +22,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      # Build on the host network: on some setups (Arch + iptables-nft, VPN
-      # MTU < 1500, broken IPv6) build containers cannot reach the npm
-      # registry through the Docker bridge and `bun install` stalls forever.
-      # This affects BUILD time only — the running containers stay isolated
-      # on the merklane-net bridge network below.
-      network: host
     container_name: merklane-app
     restart: unless-stopped
     # External DNS: containers on user-defined networks resolve external
@@ -79,10 +73,6 @@ services:
       # Web3 glossary file location inside the container (see the volumes
       # block below — normally you never change this).
       TRANSLATION_GLOSSARY_PATH: ${TRANSLATION_GLOSSARY_PATH:-/app/config/translation-glossary.json}
-      DISCORD_APPLICATION_ID: ${DISCORD_APPLICATION_ID:-}
-      DISCORD_BOT_PUBLIC_KEY: ${DISCORD_BOT_PUBLIC_KEY:-}
-      DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:-}
-      DISCORD_ADMIN_USER_IDS: ${DISCORD_ADMIN_USER_IDS:-}
       NOTIFICATIONS_SUBJECT_PREFIX: ${NOTIFICATIONS_SUBJECT_PREFIX:-[Merklane Jobs]}
       # About-page statistics: anonymous page-view beacon
       TRACKING_ENABLED: ${TRACKING_ENABLED:-true}
@@ -111,15 +101,13 @@ services:
 
   # -------------------------------------------------------------------------
   # Background bot worker: ingests external job feeds and dispatches premium
-  # job alerts (email / Telegram / Discord). Same image as the app, different
+  # job alerts (email / Telegram). Same image as the app, different
   # command. Disable entirely with WORKER_ENABLED=false.
   # -------------------------------------------------------------------------
   worker:
     build:
       context: .
       dockerfile: Dockerfile
-      # Same rationale as the app service: host networking for the build.
-      network: host
     container_name: merklane-worker
     restart: unless-stopped
     # Same DNS rationale as the app service (external feed/alert endpoints).

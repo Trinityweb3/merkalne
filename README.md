@@ -48,7 +48,7 @@ Built with **Next.js 16 (App Router) · TypeScript · Tailwind CSS 4 · Prisma �
 - Google & GitHub OAuth 2.0 (authorization-code flow, HMAC-signed expiring state, account linking by verified email)
 - Every interactive element wired to a real endpoint — no dead buttons; features that are not live yet answer honestly (e.g. Premium checkout returns 503 with an explanation)
 - Rate limiting on all auth/public endpoints, CSRF double-submit + origin validation, Zod validation on every input, security headers (CSP, HSTS, …), enumeration-safe password flows
-- **Bots & background workers** (see the dedicated section below): Telegram/Discord admin bots that ingest job postings straight into the database, a feed-scraper worker, and a premium-alert dispatcher delivering new postings via email (Resend), Telegram DMs and personal Discord webhooks — with an idempotent per-recipient delivery ledger and retries
+- **Bots & background workers** (see the dedicated section below): a Telegram admin bot that ingests job postings straight into the database (paste the raw text — it parses everything), a feed-scraper worker, and a premium-alert dispatcher delivering new postings via email (Resend) and Telegram DMs — with an idempotent per-recipient delivery ledger and retries
 
 ---
 
@@ -65,12 +65,12 @@ Built with **Next.js 16 (App Router) · TypeScript · Tailwind CSS 4 · Prisma �
                                  Prisma ──► PostgreSQL
                                    (users, sessions, posts, comments, reactions,
                                     bookmarks, reports, waitlist, contact,
-                                    telegram links, discord webhooks,
+                                    telegram links,
                                     notification log, ingestion log)
                                     ▲                  ▲
                                     │                  │
         ┌───────────────────────────┴───┐   ┌──────────┴───────────────────┐
-        │  Telegram + Discord webhooks   │   │  worker process              │
+        │  Telegram webhooks            │   │  worker process              │
         │  (admin job-ingestion bots:    │   │  (compose service "worker"): │
         │   secret-token / Ed25519       │   │   · scrapes external job     │
         │   verified, admin-gated,       │◄──┤     feeds into drafts        │
@@ -82,7 +82,7 @@ Built with **Next.js 16 (App Router) · TypeScript · Tailwind CSS 4 · Prisma �
         waitlist, premium job alerts)
 ```
 
-**Data model** (`prisma/schema.prisma`): `User`, `Account` (OAuth identities), `Session`, `VerificationToken`, `Post`, `Reaction`, `Bookmark`, `Comment`, `Report`, `WaitlistEntry`, `ContactMessage`, plus the bot tables `TelegramLink`, `DiscordWebhook`, `NotificationLog`, `IngestionLog`.
+**Data model** (`prisma/schema.prisma`): `User`, `Account` (OAuth identities), `Session`, `VerificationToken`, `Post`, `Reaction`, `Bookmark`, `Comment`, `Report`, `WaitlistEntry`, `ContactMessage`, plus the bot tables `TelegramLink`, `TelegramAdminState`, `NotificationLog`, `IngestionLog`.
 
 Design rules applied throughout:
 
@@ -114,7 +114,6 @@ Design rules applied throughout:
 ├── scripts/
 │   ├── sync-sqlite-schema.ts   # generates the SQLite preview schema
 │   ├── set-telegram-webhook.ts # registers BOTH Telegram webhooks (notifier + admin intake bots)
-│   ├── register-discord-commands.ts # registers /addjob /jobs /publish
 │   ├── grant-premium.ts        # CLI premium grant/revoke (until billing launches)
 │   ├── build-export.sh         # builds the portable export bundle (24+ pre-flight assertions)
 │   └── serve-prod.sh           # detached production-server launcher (QA)
@@ -159,13 +158,12 @@ Design rules applied throughout:
 │       └── bots/               # runtime-agnostic bot subsystem
 │           ├── config.ts       #   bot env vars + feature detection (both TG bots)
 │           ├── telegram.ts     #   Bot API client (multi-token) + command parser
-│           ├── discord.ts      #   Ed25519 verification + webhook sender
 │           ├── secretbox.ts    #   AES-256-GCM for stored webhook URLs
 │           ├── intake.ts       #   shared job-creation path (all channels)
 │           ├── feeds.ts        #   external feed scraper/mapper
 │           ├── dispatch.ts     #   premium fan-out engine + retries
 │           ├── email-alerts.ts #   Resend job-alert template (worker-safe)
-│           └── format.ts       #   alert formatters (TG/Discord/email)
+│           └── format.ts       #   alert formatters (TG/email)
 └── README.md
 ```
 
@@ -399,17 +397,14 @@ Builds are secret-free by design: `.dockerignore` excludes `.env*`, so `docker b
 | `SEED_ON_BOOT` | no | `true` → the container seeds the reference dataset after migrating. |
 | `TELEGRAM_BOT_TOKEN` | no | @BotFather token — **notifier bot**: premium alert DMs + account linking. |
 | `TELEGRAM_WEBHOOK_SECRET` | no | Secret token Telegram echoes on notifier-webhook calls (`openssl rand -hex 24`). |
-| `TELEGRAM_ADMIN_USER_IDS` | no | Comma-separated Telegram ids allowed to use the admin intake bot (also gates Discord admin commands). |
+| `TELEGRAM_ADMIN_USER_IDS` | no | Comma-separated Telegram ids allowed to use the admin intake bot. |
 | `TELEGRAM_BOT_USERNAME` | no | Notifier bot username (no `@`) for t.me deep links on `/alerts`. |
-| `TELEGRAM_ADMIN_BOT_TOKEN` | no | @BotFather token of the **second bot** — admin intake bot (job composer wizard, `/addjob /jobs /publish /grant`). |
+| `TELEGRAM_ADMIN_BOT_TOKEN` | no | @BotFather token of the **second bot** — admin intake bot (bulk-paste composer, `/addjob /jobs /publish /grant`). |
 | `TELEGRAM_ADMIN_WEBHOOK_SECRET` | no | Its own secret token (generate a DIFFERENT `openssl rand -hex 24`). |
 | `LIBRETRANSLATE_URL` | no | Self-hosted LibreTranslate base URL. Compose wires `http://libretranslate:5000` automatically; empty = translation off (English originals). |
 | `LIBRETRANSLATE_API_KEY` | no | Only when LibreTranslate runs with `LT_REQ_API_KEY`. |
 | `LIBRETRANSLATE_LOAD_ONLY` | no | Argos language pairs the bundled LibreTranslate loads (memory tuning, see DEPLOYMENT.md §7). |
 | `TRANSLATION_GLOSSARY_PATH` | no | Web3 glossary file (protects “On-chain”, “DeFi”, “TVL”, … from literal translation). Default `config/translation-glossary.json` is volume-mounted by compose; re-read every 60 s. Template: `config/translation-glossary.example.json`. |
-| `DISCORD_APPLICATION_ID` / `DISCORD_BOT_PUBLIC_KEY` | no | Discord app credentials — enable the slash-command ingestion bot (Ed25519-verified). |
-| `DISCORD_BOT_TOKEN` | no | Only needed to register the slash commands. |
-| `DISCORD_ADMIN_USER_IDS` | no | Comma-separated Discord ids allowed to use admin commands. |
 | `WORKER_ENABLED` | no | `false` → the worker container exits immediately. |
 | `WORKER_INGEST_INTERVAL_SECONDS` | no | Feed-ingestion cadence (default 300). |
 | `WORKER_DISPATCH_INTERVAL_SECONDS` | no | Premium-dispatch cadence (default 60). |
@@ -452,12 +447,15 @@ The whole interface lives under `src/app/[locale]/` with
 - **Stats stay locale-neutral**: the tracking beacon buckets `/ru/markets`
   with `/markets` (locale prefixes are stripped in `deriveSection`).
 - **Job content is machine-translated on demand** (self-hosted LibreTranslate,
-  DB-cached per post+language in `Post.translations`): localized list/article
-  pages check the cache, translate the missing fields in one batched request,
-  persist, and serve; any failure (service down, no Argos model for a locale,
-  body > 20 000 chars) falls back to the English original — a broken
-  translator can never break or slow a page. See “Bots & background workers →
-  Machine translation” and DEPLOYMENT.md §7.
+  DB-cached per post+language in `Post.translations`): localized list pages
+  translate **title + card snippet + tags**, article pages translate
+  **title + body + tags** — everything a reader sees. The first uncached view
+  waits a bounded few seconds for the translation and falls back to the
+  English original while the translation keeps filling the cache in the
+  background (the next view is fully localized); any failure (service down,
+  no Argos model for a locale, body > 20 000 chars) falls back to English —
+  a broken translator can never break or slow a page beyond that budget.
+  See “Bots & background workers → Machine translation” and DEPLOYMENT.md §7.
 - **Web3 jargon is protected by a custom glossary** (`src/lib/translation-glossary.ts`
   + `config/translation-glossary.json`): terms like On-chain, DeFi, TVL, AMM,
   DAO, NFT are swapped for opaque placeholders before each LibreTranslate
@@ -619,19 +617,15 @@ All endpoints return `{ ok: true, data }` or `{ ok: false, error, issues? }`. Mu
 | --- | --- | --- | --- |
 | POST | `/api/webhooks/telegram` | `X-Telegram-Bot-Api-Secret-Token` | **Notifier bot** (user-facing): `/start <code>`, `/alerts on\|off`, `/unlink`, `/whoami`, `/help` |
 | GET | `/api/webhooks/telegram` | — | notifier wiring status (configured, canSend, adminConfigured) |
-| POST | `/api/webhooks/telegram-admin` | `X-Telegram-Bot-Api-Secret-Token` | **Admin intake bot** (separate Telegram bot): `/start` menu + inline-button job wizard, `/addjob /jobs /publish /stats /grant /revoke` |
+| POST | `/api/webhooks/telegram-admin` | `X-Telegram-Bot-Api-Secret-Token` | **Admin intake bot** (separate Telegram bot): `/start` menu + bulk-paste job composer (paste raw text → parsed → ✅ Publish), `/addjob /jobs /publish /stats /grant /revoke` |
 | GET | `/api/webhooks/telegram-admin` | — | admin-bot wiring status |
-| POST | `/api/webhooks/discord` | Ed25519 signature | Discord slash-command twin: `/addjob /jobs /publish` (ephemeral replies) |
-| GET | `/api/webhooks/discord` | — | wiring status |
 | POST | `/api/bots/telegram/link` | session + CSRF | issue one-time t.me linking code (hash stored) |
 | PATCH/DELETE | `/api/bots/telegram/link` | session + CSRF | pause/resume DMs · unlink |
-| POST | `/api/bots/discord/webhook` | session + CSRF | save personal webhook (validated, AES-256-GCM encrypted at rest) |
-| PATCH/DELETE | `/api/bots/discord/webhook` | session + CSRF | pause/resume · remove |
 | POST | `/api/admin/dispatch` | admin session + CSRF | run dispatch + retry pass immediately |
 | POST | `/api/admin/stats` | admin session + CSRF | recompute today's statistics snapshot on demand |
 | GET | `/api/admin/dispatch` | admin session | pipeline status: undispatched posts, premium subscribers, ledgers |
 
-Server-to-server webhook endpoints are exempt from browser CSRF (they carry no cookies) and instead authenticate via the Telegram secret token / Discord Ed25519 signature, plus per-chat/user rate limits, admin allowlists and Zod validation on every write.
+Server-to-server webhook endpoints are exempt from browser CSRF (they carry no cookies) and instead authenticate via the Telegram secret token, plus per-chat/user rate limits, admin allowlists and Zod validation on every write.
 
 ---
 
@@ -650,11 +644,34 @@ Server-to-server webhook endpoints are exempt from browser CSRF (they carry no c
 
 ## Bots & background workers
 
-Two bots + one worker process, all wired into the same Prisma database and sharing one job-creation path (`src/lib/bots/intake.ts`):
+Two bots + one worker process, all wired into the same Prisma database and sharing one job-creation path (`src/lib/bots/intake.ts`): the **notifier bot** (premium alert DMs, account linking), the **admin intake bot** (bulk-paste job composer + admin commands) and the **background worker** (feed scraping, alert dispatch, daily stats).
 
 ### 1. Job Ingestion Bot (Telegram)
 
-Admins add vacancies straight from Telegram — no admin UI needed.
+Admins add vacancies straight from Telegram — no admin UI needed. Two ways:
+
+**Bulk paste (the fast path).** Tap ➕ Add job in the admin bot, paste the raw
+job text in any format —
+
+```
+Company: Northstar Protocol
+Title: Senior Rust Engineer
+URL: https://…/apply
+Salary: $120k–$160k
+Type: Full-time
+Workplace: Remote
+Description: Build the indexing pipeline…
+```
+
+— and the parser extracts Title, Company, URL, Section (Intern/Junior,
+Mid/Senior, Opportunities, Markets, Insights, Blog), Body and everything else
+by label + heuristics. Unlabeled pastes work too: the first line becomes the
+title (`Title at Company` splits), the first URL becomes the apply link, and
+level/workplace/type keywords (`senior`, `remote`, `full-time`…) are detected
+automatically. Confirm the parsed fields with inline buttons — ✅ Publish,
+📝 Draft, 🔄 Section to cycle the (guessed) section — one tap and it is live.
+
+**Power one-liner.**
 
 ```
 /addjob Senior Rust Engineer | Northstar Protocol | https://…/apply | senior | rust,solana
@@ -665,7 +682,7 @@ publish=yes
 ```
 
 - Five pipe-separated fields (title · company · apply URL · section · tags), optional `key=value` lines below; sections accept aliases (`junior`, `mid`, `senior`, `opp`…)
-- Jobs land as **drafts** by default; `publish=yes` (or `/publish <id>` later) publishes and immediately triggers premium dispatch
+- Jobs land as **drafts** by default (bulk paste defaults to publish); `publish=yes` (or `/publish <id>` later) publishes and immediately triggers premium dispatch
 - Every command is: secret-token verified, admin-allowlisted (`TELEGRAM_ADMIN_USER_IDS`), Zod-validated, rate-limited, deduped by URL, and written to `IngestionLog`
 
 Setup:
@@ -680,17 +697,8 @@ bun scripts/set-telegram-webhook.ts
 
 Other commands: `/jobs [n]`, `/publish <id>`, `/stats`, `/grant <email> <days>`, `/revoke <email>` (premium is granted manually until the stage-2 billing launch), plus subscriber-side `/start <code>`, `/alerts on|off`, `/unlink`, `/whoami`.
 
-### 2. Job Ingestion Bot (Discord)
 
-The same intake as Discord slash commands — `/addjob`, `/jobs`, `/publish` — with replies visible only to the invoker (ephemeral, `flags: 64`). Every request is Ed25519-verified against `DISCORD_BOT_PUBLIC_KEY` (timestamp freshness ≤ 5 min); administration is gated by `DISCORD_ADMIN_USER_IDS`.
-
-```bash
-# In .env: DISCORD_APPLICATION_ID, DISCORD_BOT_PUBLIC_KEY, DISCORD_BOT_TOKEN
-bun scripts/register-discord-commands.ts          # global (up to 1 h propagation)
-bun scripts/register-discord-commands.ts <guild>  # instant, single server
-```
-
-### 3. Feed-scraper worker (automated API ingestion)
+### 2. Feed-scraper worker (automated API ingestion)
 
 Point `INGEST_FEED_URLS` at any Remotive-shaped API (`https://remotive.com/api/remote-jobs?limit=25` works out of the box) or host a JSON feed in the generic Merklane format:
 
@@ -706,7 +714,7 @@ Point `INGEST_FEED_URLS` at any Remotive-shaped API (`https://remotive.com/api/r
 
 The worker dedupes by URL, infers sections (`intern/junior/mid/senior/opp…` keywords), strips HTML, caps body length, and creates drafts (or publishes when `AUTO_PUBLISH_INGESTED_JOBS=true`).
 
-### 4. Premium Subscriber Notification Bot (dispatch worker)
+### 3. Premium Subscriber Notification Bot (dispatch worker)
 
 The moment a posting is published (by bot, feed or web composer) the dispatcher fans it out to every **active premium subscriber** (`User.plan=premium` and not expired) on each enabled channel:
 
@@ -714,7 +722,7 @@ The moment a posting is published (by bot, feed or web composer) the dispatcher 
 | --- | --- | --- |
 | Email | Resend (branded alert template) | dev fallback prints to console without a key |
 | Telegram | Bot API DM to the linked chat | one-time hashed linking codes, per-user pause |
-| Discord | user's personal webhook | URL validated, AES-256-GCM encrypted at rest |
+
 
 Guarantees: the `(postId, channel, recipient)` unique index makes delivery **idempotent** — nobody ever receives the same posting twice, even across restarts; failed sends retry up to `NOTIFICATION_RETRY_MAX` times; every event is audited in `NotificationLog` + `IngestionLog`. Publishing also fires an immediate inline dispatch so hot jobs do not wait for the worker tick.
 
@@ -732,7 +740,7 @@ docker compose up -d          # production — "worker" service, heartbeat healt
 bun run worker                # local — standalone, same .env
 ```
 
-Subscribers manage their channels on `/alerts` (Telegram deep-link + Discord webhook, both session + CSRF protected).
+Subscribers manage their channels on `/alerts` (Telegram deep-link, session + CSRF protected).
 
 ---
 

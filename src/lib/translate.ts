@@ -44,6 +44,21 @@ const TARGET_COOLDOWN_MS = 60_000
 /** Supported-language list cache TTL. */
 const LANGUAGES_TTL_MS = 10 * 60_000
 
+/**
+ * ADAPTIVE per-chunk timeout. A fixed 3.5 s budget only ever works for short
+ * strings: self-hosted LibreTranslate runs Argos models on the CPU, and a
+ * 4 000-char body chunk routinely needs 10–30 s on a small VPS. A too-short
+ * timeout made title translation succeed while EVERY body/snippet batch
+ * timed out — the exact "titles translate, bodies stay English" production
+ * bug. Scale the budget with the payload (≈6 ms/char ≈ 165 chars/s — slower
+ * than any real Argos instance) and cap it at 60 s per chunk.
+ */
+const MAX_CHUNK_TIMEOUT_MS = 60_000
+const CHUNK_TIMEOUT_MS_PER_CHAR = 6
+function chunkTimeoutMs(totalChars: number): number {
+  return Math.min(MAX_CHUNK_TIMEOUT_MS, REQUEST_TIMEOUT_MS + totalChars * CHUNK_TIMEOUT_MS_PER_CHAR)
+}
+
 export function translationConfigured(): boolean {
   return Boolean(env.LIBRETRANSLATE_URL)
 }
@@ -210,11 +225,12 @@ async function translateChunk(texts: string[], target: string): Promise<string[]
   }
   if (env.LIBRETRANSLATE_API_KEY) body.api_key = env.LIBRETRANSLATE_API_KEY
 
+  const totalChars = texts.reduce((n, t) => n + t.length, 0)
   const res = await fetch(`${env.LIBRETRANSLATE_URL}/translate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    signal: AbortSignal.timeout(chunkTimeoutMs(totalChars)),
     cache: 'no-store',
   })
   if (!res.ok) {
