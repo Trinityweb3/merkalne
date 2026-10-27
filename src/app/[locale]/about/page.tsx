@@ -1,4 +1,5 @@
 import type { Metadata } from 'next'
+import { getTranslations } from 'next-intl/server'
 import { Link } from '@/i18n/navigation'
 import { Compass, FileText, Globe, ShieldCheck, Sparkles, Users, Video } from 'lucide-react'
 import { getLatestDailyStats } from '@/lib/stats/aggregate'
@@ -10,36 +11,27 @@ import { MONTHLY_RECAPS, PITCH_DECK, TEAM_MEMBERS, type TeamMember } from '@/lib
 
 export const dynamic = 'force-dynamic'
 
-export const metadata: Metadata = {
-  title: 'About',
-  description:
-    'What Merklane is, who builds it, and how the site is doing — live statistics updated once a day: visitors, sections, countries, premium subscribers and more.',
+interface PageProps {
+  params: Promise<{ locale: string }>
+}
+
+export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
+  const { locale } = await params
+  const t = await getTranslations({ locale, namespace: 'about' })
+  return {
+    title: t('metaTitle'),
+    description: t('metaDescription'),
+  }
 }
 
 const PILLARS = [
-  {
-    icon: Compass,
-    title: 'One place, six sections',
-    text: 'Intern/Junior, Mid/Senior, Opportunities, Markets, Insights and the community Blog. Material keeps its mosaic cards and full context instead of scattered screenshots.',
-  },
-  {
-    icon: Globe,
-    title: 'Twenty languages',
-    text: 'The interface and published material cover all 20 supported languages — including right-to-left Arabic, Persian and Urdu.',
-  },
-  {
-    icon: ShieldCheck,
-    title: 'Honesty first',
-    text: 'Missing salary means “not provided”, never zero. Nothing is invented: no fake charts, no fictional campaigns, no promised airdrops. What is not live yet says so.',
-  },
-  {
-    icon: Sparkles,
-    title: 'Free core, paid extras',
-    text: 'Reading, search, bookmarks, comments and Blog publishing are free forever. Premium adds delivery; Premium+ adds publishing tools for teams.',
-  },
-]
+  { icon: Compass, titleKey: 'pillar1Title', textKey: 'pillar1Text' },
+  { icon: Globe, titleKey: 'pillar2Title', textKey: 'pillar2Text' },
+  { icon: ShieldCheck, titleKey: 'pillar3Title', textKey: 'pillar3Text' },
+  { icon: Sparkles, titleKey: 'pillar4Title', textKey: 'pillar4Text' },
+] as const
 
-/** Initials avatar with a deterministic per-name gradient — no assets needed. */
+/** "October 2026" for future recap entries (owner-supplied content). */
 function utcMonthYear(iso: string): string {
   const d = new Date(iso)
   const MONTHS = [
@@ -72,45 +64,56 @@ function TeamAvatar({ name, imageUrl }: { name: string; imageUrl?: string }) {
   )
 }
 
-function TeamCard({ member }: { member: TeamMember }) {
-  return (
-    <div className="card team-card">
+/**
+ * One team card. When the member has a social link the WHOLE card becomes
+ * the link (opens in a new tab; the aria-label announces it); without a
+ * link it renders as a plain, non-clickable card.
+ */
+function TeamCard({
+  member,
+  role,
+  bio,
+  openLabel,
+}: {
+  member: TeamMember
+  role: string
+  bio: string
+  openLabel: string
+}) {
+  const body = (
+    <>
       <div className="row" style={{ gap: 14, alignItems: 'center' }}>
         <TeamAvatar name={member.name} imageUrl={member.imageUrl} />
         <div style={{ minWidth: 0 }}>
           <h3>{member.name}</h3>
-          <p className="team-role">{member.role}</p>
+          <p className="team-role">{role}</p>
         </div>
       </div>
       <p className="muted small" style={{ marginTop: 14, lineHeight: 1.7 }}>
-        {member.bio}
+        {bio}
       </p>
-      {member.links.length > 0 ? (
-        <div className="team-links">
-          {member.links.map((l) =>
-            l.url.startsWith('/') ? (
-              <Link key={l.url} href={l.url} className="chip">
-                {l.label}
-              </Link>
-            ) : (
-              <a
-                key={l.url}
-                href={l.url}
-                className="chip"
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                {l.label}
-              </a>
-            ),
-          )}
-        </div>
-      ) : null}
-    </div>
+    </>
   )
+
+  if (member.socialUrl) {
+    return (
+      <a
+        className="card team-card"
+        href={member.socialUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        aria-label={openLabel}
+      >
+        {body}
+      </a>
+    )
+  }
+  return <div className="card team-card">{body}</div>
 }
 
-export default async function AboutPage() {
+export default async function AboutPage({ params }: PageProps) {
+  const { locale } = await params
+  const t = await getTranslations({ locale, namespace: 'about' })
   const latest = await getLatestDailyStats()
   const translationProvider = activeTranslationProvider()
 
@@ -124,12 +127,8 @@ export default async function AboutPage() {
     >
       <div className="page-head">
         <div>
-          <h1>About Merklane</h1>
-          <p>
-            Merklane exists because Web3 opportunities are scattered, noisy and often misleading. We collect
-            them in one place, label what is known, admit what is not, and let you decide with full context.
-            This page also shows who is behind the project — and, updated once a day, how the site is doing.
-          </p>
+          <h1>{t('title')}</h1>
+          <p>{t('intro')}</p>
         </div>
       </div>
 
@@ -142,22 +141,23 @@ export default async function AboutPage() {
         <section className="section-block">
           <div className="notice" style={{ marginBottom: 0 }}>
             <ShieldCheck width={18} height={18} aria-hidden />
-            <span>
-              Live statistics appear here after the first daily snapshot (computed automatically around
-              03:00 UTC — an admin can also trigger one on demand). The anonymous counters have already
-              started collecting. Until then this page stays honest instead of showing made-up zeros.
-            </span>
+            <span>{t('statsPending')}</span>
           </div>
         </section>
       )}
 
       {/* Tiny indicator: which translation engine serves the 19 non-English
-          locales (server-side config — hidden when translation is off). */}
+          locales (server-side config — hidden when translation is off).
+          Tailwind margins keep it clear of the stats block above and the
+          team header below (the global reset zeroes all <p> margins). */}
       {translationProvider ? (
-        <p className="muted small" style={{ marginTop: -6, lineHeight: 1.7 }}>
-          Translation via {translationProvider.label}
-          {translationProvider.model ? ` · ${translationProvider.model}` : ''} — results are cached per
-          language after the first view.
+        <p className="muted small" style={{ marginTop: 20, marginBottom: 12, lineHeight: 1.7 }}>
+          {translationProvider.model
+            ? t('translationViaModel', {
+                provider: translationProvider.label,
+                model: translationProvider.model,
+              })
+            : t('translationVia', { provider: translationProvider.label })}
         </p>
       ) : null}
 
@@ -171,14 +171,20 @@ export default async function AboutPage() {
               <Users width={18} height={18} />
             </span>
             <div>
-              <h2>The people behind Merklane</h2>
-              <p>A small, deliberate team — here are the accounts behind the project.</p>
+              <h2 style={{ marginBottom: 8 }}>{t('teamTitle')}</h2>
+              <p style={{ marginBottom: 8 }}>{t('teamSub')}</p>
             </div>
           </div>
         </div>
-        <div className="grid-3">
+        <div className="grid-3" style={{ marginTop: 8 }}>
           {TEAM_MEMBERS.map((member) => (
-            <TeamCard key={member.name} member={member} />
+            <TeamCard
+              key={member.name}
+              member={member}
+              role={t(member.roleKey)}
+              bio={member.bio?.trim() ? member.bio : t('bioPlaceholder')}
+              openLabel={t('openProfile', { name: member.name })}
+            />
           ))}
         </div>
       </section>
@@ -190,22 +196,22 @@ export default async function AboutPage() {
         <div className="section-title">
           <div className="row">
             <div>
-              <h2>What makes Merklane different</h2>
-              <p>Four rules the project is built on.</p>
+              <h2 style={{ marginBottom: 8 }}>{t('pillarsTitle')}</h2>
+              <p style={{ marginBottom: 8 }}>{t('pillarsSub')}</p>
             </div>
           </div>
         </div>
-        <div className="grid-2">
-          {PILLARS.map(({ icon: Icon, title, text }) => (
-            <div className="card" key={title}>
+        <div className="grid-2" style={{ marginTop: 8 }}>
+          {PILLARS.map(({ icon: Icon, titleKey, textKey }) => (
+            <div className="card" key={titleKey}>
               <div className="row" style={{ gap: 12 }}>
                 <span className="section-icon">
                   <Icon width={18} height={18} />
                 </span>
-                <h3>{title}</h3>
+                <h3>{t(titleKey)}</h3>
               </div>
               <p className="muted small" style={{ marginTop: 12, lineHeight: 1.7 }}>
-                {text}
+                {t(textKey)}
               </p>
             </div>
           ))}
@@ -219,38 +225,42 @@ export default async function AboutPage() {
         <div className="section-title">
           <div className="row">
             <div>
-              <h2>What you can do today</h2>
-              <p>The current launch covers the full editorial experience.</p>
+              <h2 style={{ marginBottom: 8 }}>{t('todayTitle')}</h2>
+              <p style={{ marginBottom: 8 }}>{t('todaySub')}</p>
             </div>
           </div>
         </div>
-        <div className="grid-2">
+        <div className="grid-2" style={{ marginTop: 8 }}>
           <div className="card">
-            <h3>For readers and hunters</h3>
+            <h3>{t('readersTitle')}</h3>
             <ul
               className="muted small"
               style={{ display: 'grid', gap: 10, marginTop: 10, listStyle: 'outside', paddingLeft: 20 }}
             >
-              <li>Browse and filter all six sections on any device</li>
-              <li>Search editorial material with exact hashtag support</li>
-              <li>Save posts for free — synced across your devices</li>
-              <li>React, comment and report suspicious material</li>
+              <li>{t('readers1')}</li>
+              <li>{t('readers2')}</li>
+              <li>{t('readers3')}</li>
+              <li>{t('readers4')}</li>
             </ul>
           </div>
           <div className="card">
-            <h3>For community authors</h3>
+            <h3>{t('authorsTitle')}</h3>
             <ul
               className="muted small"
               style={{ display: 'grid', gap: 10, marginTop: 10, listStyle: 'outside', paddingLeft: 20 }}
             >
-              <li>Publish in the Blog for free with drafts and previews</li>
-              <li>Keep ownership — edit or remove your posts anytime</li>
-              <li>Reach readers across all 20 languages</li>
+              <li>{t('authors1')}</li>
+              <li>{t('authors2')}</li>
+              <li>{t('authors3')}</li>
               <li>
-                Editorial publishing quotas arrive with{' '}
-                <Link href="/premium" className="link">
-                  Premium+
-                </Link>
+                {t.rich('authors4', {
+                  // The <premiumPlus> tag renders as a link to /premium.
+                  premiumPlus: (chunks) => (
+                    <Link href="/premium" className="link">
+                      {chunks}
+                    </Link>
+                  ),
+                })}
               </li>
             </ul>
           </div>
@@ -267,8 +277,8 @@ export default async function AboutPage() {
               <Video width={18} height={18} />
             </span>
             <div>
-              <h2>Monthly recaps</h2>
-              <p>Each month: what happened on Merklane, what is next, and how you can support us.</p>
+              <h2 style={{ marginBottom: 8 }}>{t('recapsTitle')}</h2>
+              <p style={{ marginBottom: 8 }}>{t('recapsSub')}</p>
             </div>
           </div>
         </div>
@@ -279,11 +289,9 @@ export default async function AboutPage() {
                 <Video width={18} height={18} />
               </span>
               <div>
-                <h3>First recap after the first full month</h3>
+                <h3>{t('recapTitle')}</h3>
                 <p className="muted small" style={{ marginTop: 8, lineHeight: 1.7 }}>
-                  Every month we publish a short video: the month in numbers, what worked, what is coming,
-                  and how the project can be supported. The first recap lands here as soon as the first
-                  full month closes — nothing is teased before it exists.
+                  {t('recapText')}
                 </p>
               </div>
             </div>
@@ -314,8 +322,8 @@ export default async function AboutPage() {
               <FileText width={18} height={18} />
             </span>
             <div>
-              <h2>Pitch deck</h2>
-              <p>For investors: what the funding is for and what it costs to run Merklane.</p>
+              <h2 style={{ marginBottom: 8 }}>{t('pitchTitle')}</h2>
+              <p style={{ marginBottom: 8 }}>{t('pitchSub')}</p>
             </div>
           </div>
         </div>
@@ -325,22 +333,21 @@ export default async function AboutPage() {
               <FileText width={18} height={18} />
             </span>
             <div style={{ minWidth: 0, flex: 1 }}>
-              <h3>Merklane investor deck</h3>
+              <h3>{t('pitchCardTitle')}</h3>
               <p className="muted small" style={{ marginTop: 8, lineHeight: 1.7 }}>
-                {PITCH_DECK.note ??
-                  'What the funding is for, site expenses, roadmap and results — updated with every monthly recap.'}
+                {PITCH_DECK.note ?? t('pitchNote')}
               </p>
             </div>
           </div>
           {PITCH_DECK.url ? (
             <Button asChild>
               <a href={PITCH_DECK.url} target="_blank" rel="noopener noreferrer">
-                Open the deck (PDF)
+                {t('openDeck')}
               </a>
             </Button>
           ) : (
             <Button asChild variant="outline">
-              <Link href="/contact">Request the deck</Link>
+              <Link href="/contact">{t('requestDeck')}</Link>
             </Button>
           )}
         </div>
@@ -353,17 +360,19 @@ export default async function AboutPage() {
         <div className="notice">
           <ShieldCheck width={18} height={18} aria-hidden />
           <span>
-            Merklane is an information service, not an employer, exchange or financial adviser. Every listing
-            reflects its original source — always verify before sharing personal data, sending funds or
-            connecting a wallet. Read the{' '}
-            <Link href="/risk" className="link">
-              safety notice
-            </Link>{' '}
-            and{' '}
-            <Link href="/contact" className="link">
-              tell us
-            </Link>{' '}
-            when something looks wrong.
+            {t.rich('safetyText', {
+              // <risk> → link to /risk, <contact> → link to /contact.
+              risk: (chunks) => (
+                <Link href="/risk" className="link">
+                  {chunks}
+                </Link>
+              ),
+              contact: (chunks) => (
+                <Link href="/contact" className="link">
+                  {chunks}
+                </Link>
+              ),
+            })}
           </span>
         </div>
       </section>

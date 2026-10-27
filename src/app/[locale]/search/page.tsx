@@ -129,11 +129,8 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
     <div className="container page">
       <div className="page-head" style={{ marginBottom: 0 }}>
         <div>
-          <h1>Search</h1>
-          <p>
-            Editorial material only — jobs, opportunities, market signals and insights. Community
-            Blog posts are searchable inside the Blog section itself.
-          </p>
+          <h1>{t('title')}</h1>
+          <p>{t('pageSub')}</p>
         </div>
       </div>
 

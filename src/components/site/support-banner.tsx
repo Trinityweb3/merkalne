@@ -2,6 +2,7 @@
 
 import { Link } from '@/i18n/navigation'
 import { useEffect, useRef, useState } from 'react'
+import { useTranslations } from 'next-intl'
 import { Button } from '@/components/ui/button'
 import { useSession } from '@/components/providers/session-provider'
 
@@ -12,6 +13,7 @@ import { useSession } from '@/components/providers/session-provider'
  * applied from day one).
  */
 export function SupportBanner() {
+  const t = useTranslations('support')
   const { user, loading } = useSession()
   const sentinelRef = useRef<HTMLDivElement | null>(null)
   const [inView, setInView] = useState(false)
@@ -35,19 +37,18 @@ export function SupportBanner() {
       <div ref={sentinelRef} aria-hidden style={{ minHeight: 1 }} />
       <div className={`support-banner ${inView ? '' : 'fixed'}`}>
         <div>
-          <h3>Support Merklane. Help us keep opportunities accessible.</h3>
+          <h3>{t('title')}</h3>
           <p>
-            Support the project and get your private Telegram bot{' '}
-            <span className="optional">with unlimited filter rules.</span>
+            {t('text')} <span className="optional">{t('textOptional')}</span>
           </p>
         </div>
         <div className="stack" style={{ gap: 5, flexShrink: 0 }}>
           <Link href="/premium">
             <Button size="sm" style={{ background: 'var(--link)', color: '#081219' }}>
-              Support Merklane
+              {t('cta')}
             </Button>
           </Link>
-          <span className="tiny muted">$5/month or $30/year</span>
+          <span className="tiny muted">{t('price')}</span>
         </div>
       </div>
     </div>

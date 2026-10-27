@@ -12,7 +12,14 @@ import { ArticleBody } from '@/components/site/article-body'
 import { PostActions } from '@/components/site/post-actions'
 import { Comments } from '@/components/site/comments'
 import { SupportBanner } from '@/components/site/support-banner'
-import { formatDateTime, timeAgo } from '@/lib/utils'
+import { formatDateTime, formatDate } from '@/lib/utils'
+import {
+  addedAgoLabel,
+  EMPLOYMENT_LABEL_KEYS,
+  KIND_LABEL_KEYS,
+  LEVEL_LABEL_KEYS,
+  WORKPLACE_LABEL_KEYS,
+} from '@/lib/post-labels'
 
 interface PageProps {
   params: Promise<{ locale: string; section: string; slug: string }>
@@ -33,7 +40,9 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
 
 export default async function PostDetailPage({ params }: PageProps) {
   const { locale, section, slug } = await params
-  const t = await getTranslations('common')
+  const t = await getTranslations({ locale, namespace: 'common' })
+  const ta = await getTranslations({ locale, namespace: 'article' })
+  const tm = await getTranslations({ locale, namespace: 'postMeta' })
   const fetched = await getPostBySlug(slug)
   if (!fetched || fetched.section !== section) notFound()
   // Localized serving: DB cache → LibreTranslate (title + body) → English
@@ -56,19 +65,36 @@ export default async function PostDetailPage({ params }: PageProps) {
       })
     : null
 
+  // Display-level label translation (DB values stay English — see
+  // src/lib/post-labels.ts).
+  const kindLabel = (v: string) => tm(KIND_LABEL_KEYS[v] ?? 'post')
+  const employmentLabel = (v: string) => tm(EMPLOYMENT_LABEL_KEYS[v] ?? 'post')
+  const levelLabel = (v: string) => tm(LEVEL_LABEL_KEYS[v] ?? 'post')
+  const locationLabel = (v: string) => tm(WORKPLACE_LABEL_KEYS[v] ?? 'post')
+
   const metaRows = [
-    post.location ? { icon: MapPin, text: post.location } : null,
+    post.location ? { icon: MapPin, text: locationLabel(post.location) } : null,
     post.employment || post.level
-      ? { icon: Briefcase, text: [post.employment, post.level].filter(Boolean).join(' · ') }
+      ? {
+          icon: Briefcase,
+          text: [
+            post.employment && employmentLabel(post.employment),
+            post.level && levelLabel(post.level),
+          ]
+            .filter(Boolean)
+            .join(' · '),
+        }
       : null,
     post.salary ? { icon: Wallet, text: post.salary } : null,
     post.stack ? { icon: CodeXml, text: post.stack } : null,
-    post.kind && post.section === 'opportunities' ? { icon: Compass, text: post.kind } : null,
+    post.kind && post.section === 'opportunities'
+      ? { icon: Compass, text: kindLabel(post.kind) }
+      : null,
   ].filter(Boolean) as { icon: React.ComponentType<{ width?: number; height?: number }>; text: string }[]
 
   return (
     <div className="container page">
-      <nav className="breadcrumb" aria-label="Breadcrumb">
+      <nav className="breadcrumb" aria-label={t('breadcrumb')}>
         <Link href="/">{t('home')}</Link>
         <span aria-hidden>/</span>
         <Link href={`/${post.section}`}>{meta.title}</Link>
@@ -84,11 +110,11 @@ export default async function PostDetailPage({ params }: PageProps) {
 
           <div className="article-meta">
             {post.company ? <strong>{post.company}</strong> : null}
-            {post.kind ? <span className="badge">{post.kind}</span> : null}
-            {post.author?.name ? <span>by {post.author.name}</span> : null}
-            <span>Added {post.publishedAt ? timeAgo(post.publishedAt) : '—'}</span>
+            {post.kind ? <span className="badge">{kindLabel(post.kind)}</span> : null}
+            {post.author?.name ? <span>{ta('by', { name: post.author.name })}</span> : null}
+            <span>{addedAgoLabel(post.publishedAt, tm, formatDate)}</span>
             {post.publishedAt ? <span>{formatDateTime(post.publishedAt)}</span> : null}
-            <span className="badge state-published">{post.section === 'blog' ? 'Blog' : 'Editorial'}</span>
+            <span className="badge state-published">{post.section === 'blog' ? ta('badgeBlog') : ta('badgeEditorial')}</span>
           </div>
 
           <ArticleBody body={post.body} />
@@ -102,7 +128,7 @@ export default async function PostDetailPage({ params }: PageProps) {
                   rel="noopener noreferrer nofollow"
                   className="row link small"
                 >
-                  Apply <ExternalLink width={14} height={14} />
+                  {ta('apply')} <ExternalLink width={14} height={14} />
                 </a>
               ) : null}
               {post.originalUrl ? (
@@ -112,12 +138,13 @@ export default async function PostDetailPage({ params }: PageProps) {
                   rel="noopener noreferrer nofollow"
                   className="row link small"
                 >
-                  Original post <ExternalLink width={14} height={14} />
+                  {ta('originalPost')} <ExternalLink width={14} height={14} />
                 </a>
               ) : null}
             </div>
           ) : null}
 
+          {/* Hashtags are functional identifiers — always English. */}
           {serialized.tags.length > 0 ? (
             <div className="tags article-tags">
               {serialized.tags.map((tag) => (
@@ -141,13 +168,15 @@ export default async function PostDetailPage({ params }: PageProps) {
           <Comments slug={post.slug} initialCount={commentCount} />
         </article>
 
-        <aside className="article-side" aria-label="About this material">
+        <aside className="article-side" aria-label={ta('aboutMaterial')}>
           <div className="card">
-            <h3>About this material</h3>
+            <h3>{ta('aboutMaterial')}</h3>
             <p className="muted small" style={{ marginTop: 8 }}>
-              Published in <Link href={`/${post.section}`} className="link">{meta.title}</Link>.
-              Verify all details on the original page before acting — especially payment requests,
-              downloads and wallet permissions.
+              {ta.rich('publishedInVerify', {
+                name: meta.title,
+                // The <section> tag renders as a link to the section page.
+                section: (chunks) => <Link href={`/${post.section}`} className="link">{chunks}</Link>,
+              })}
             </p>
             {metaRows.length > 0 ? (
               <div className="metadata">
@@ -163,7 +192,7 @@ export default async function PostDetailPage({ params }: PageProps) {
 
           {related.length > 0 ? (
             <div className="card">
-              <h3>More in {meta.title}</h3>
+              <h3>{ta('moreIn', { section: meta.title })}</h3>
               <div className="stack" style={{ gap: 14, marginTop: 12 }}>
                 {related.map((r) => (
                   <Link
@@ -175,7 +204,7 @@ export default async function PostDetailPage({ params }: PageProps) {
                     <strong>{r.title}</strong>
                     {r.company ? <span className="muted small"> · {r.company}</span> : null}
                     <span className="muted tiny" style={{ display: 'block' }}>
-                      {r.publishedAt ? timeAgo(r.publishedAt) : ''}
+                      {r.publishedAt ? addedAgoLabel(r.publishedAt, tm, formatDate) : ''}
                     </span>
                   </Link>
                 ))}

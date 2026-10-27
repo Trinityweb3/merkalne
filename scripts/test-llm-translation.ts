@@ -10,10 +10,12 @@
  *
  * Covered: provider priority (Groq → DeepSeek → Gemini → LibreTranslate),
  * Groq request shape (URL/auth/model/system prompt/JSON mode), glossary
- * placeholder protection through the LLM lane, de-duplication + blank
- * filtering, 429 → cooldown → LibreTranslate fallback, model-not-found
- * fallback (gpt-oss-120b → qwen3.8-27b, remembered), mangled-placeholder
- * fail-safe, and the About-page indicator info.
+ * placeholder protection through the LLM lane, HASHTAG protection (#tokens
+ * survive every lane byte-identically and are never split by glossary
+ * terms), de-duplication + blank filtering, 429 → cooldown →
+ * LibreTranslate fallback, model-not-found fallback (gpt-oss-120b →
+ * qwen3.8-27b, remembered), mangled-placeholder fail-safe, and the
+ * About-page indicator info.
  *
  * Run:  bun scripts/test-llm-translation.ts
  */
@@ -34,6 +36,7 @@ const ALL_SCENARIOS = [
   'groq-rate-limit',
   'groq-model-fallback',
   'groq-mangled-placeholder',
+  'hashtag-protection',
   'deepseek',
   'gemini',
   'libretranslate-only',
@@ -80,6 +83,7 @@ const SCENARIO_ENV: Record<string, Record<string, string>> = {
   'groq-rate-limit': { GROQ_API_KEY: 'test-groq-key', LIBRETRANSLATE_URL: 'http://lt.mock' },
   'groq-model-fallback': { GROQ_API_KEY: 'test-groq-key' },
   'groq-mangled-placeholder': { GROQ_API_KEY: 'test-groq-key' },
+  'hashtag-protection': { GROQ_API_KEY: 'test-groq-key' },
   deepseek: { DEEPSEEK_API_KEY: 'test-deepseek-key' },
   gemini: { GOOGLE_AI_API_KEY: 'test-gemini-key' },
   'libretranslate-only': { LIBRETRANSLATE_URL: 'http://lt.mock' },
@@ -138,6 +142,7 @@ async function child() {
     'groq-mangled-placeholder': () => Response.json(completion(['Протокол с рекордным значением'])),
     deepseek: (call) => Response.json(completion(sentTexts(call.body.messages?.[1]?.content ?? '').map((t) => `[RU] ${t}`))),
     gemini: (call) => Response.json(completion(sentTexts(call.body.messages?.[1]?.content ?? '').map((t) => `[RU] ${t}`))),
+    'hashtag-protection': (call) => Response.json(completion(sentTexts(call.body.messages?.[1]?.content ?? '').map((t) => `[RU] ${t}`))),
     'libretranslate-only': () => new Response('not an llm endpoint', { status: 404 }),
   }
 
@@ -246,6 +251,53 @@ async function child() {
     ok('provider cooled down — no second doomed Groq round trip', llmCalls().length === 1 && r2 === null, `llm=${llmCalls().length}`)
   }
 
+  if (SCENARIO === 'hashtag-protection') {
+    // 1) Plain hashtags in a title: protected as ⟦N⟧, restored byte-identically.
+    const r1 = await translateBatch(['Why #crypto needs #rust builders'], 'ru')
+    ok(
+      'hashtags restored byte-identically after the LLM round trip',
+      r1?.[0] === '[RU] Why #crypto needs #rust builders',
+      JSON.stringify(r1),
+    )
+    const c1 = llmCalls()[0]
+    const user1 = c1?.body.messages?.[1]?.content ?? ''
+    ok(
+      'hashtags left the process as ⟦N⟧ placeholders (never raw)',
+      /⟦\d+⟧/.test(user1) && !user1.includes('#crypto') && !user1.includes('#rust'),
+      JSON.stringify(user1),
+    )
+    ok(
+      'system prompt explicitly protects hashtags (search keywords)',
+      /hashtag/i.test(c1?.body.messages?.[0]?.content ?? '') && /#crypto/.test(c1?.body.messages?.[0]?.content ?? ''),
+    )
+
+    // 2) A hashtag that CONTAINS a glossary term (#defi vs glossary "DeFi"):
+    //    the hashtag pass runs FIRST, so the token is never split apart.
+    const r2 = await translateBatch(['The #defi ecosystem grows'], 'ru')
+    ok(
+      'glossary term inside a hashtag stays one intact token (#defi)',
+      r2?.[0] === '[RU] The #defi ecosystem grows',
+      JSON.stringify(r2),
+    )
+
+    // 3) Markdown ATX headings are NOT hashtags — untouched, unmangled.
+    const r3 = await translateBatch(['# Section heading', '## Another heading'], 'ru')
+    ok(
+      'markdown ATX headings are not treated as hashtags',
+      r3?.[0] === '[RU] # Section heading' && r3?.[1] === '[RU] ## Another heading',
+      JSON.stringify(r3),
+    )
+
+    // 4) Mixed protection: hashtags + glossary terms restore together.
+    const r4 = await translateBatch(['#airdrop TVL report on DeFi'], 'ru')
+    ok(
+      'hashtags and glossary terms restore together in one string',
+      r4?.[0] === '[RU] #airdrop TVL report on DeFi',
+      JSON.stringify(r4),
+    )
+    ok('no placeholder leaked into any result', [r1, r2, r3, r4].every((r) => (r ?? []).every((s) => !s.includes('⟦'))))
+  }
+
   if (SCENARIO === 'deepseek') {
     ok('provider = deepseek (priority 2)', activeTranslationProvider()?.id === 'deepseek' && activeTranslationProvider()?.model === 'deepseek-chat', JSON.stringify(activeTranslationProvider()))
     const r1 = await translateBatch(['Hello'], 'ru')
@@ -273,6 +325,20 @@ async function child() {
     const r1 = await translateBatch(['Hello'], 'ru')
     ok('translated via LibreTranslate', r1?.[0] === '[RU] Hello', JSON.stringify(r1))
     ok('no LLM endpoint was ever contacted', llmCalls().length === 0, `llm calls=${llmCalls().length}`)
+
+    // Hashtag protection applies to the LibreTranslate lane as well.
+    const r2 = await translateBatch(['Why #crypto needs #rust builders'], 'ru')
+    ok(
+      'hashtags protected through the LibreTranslate lane too',
+      r2?.[0] === '[RU] Why #crypto needs #rust builders',
+      JSON.stringify(r2),
+    )
+    const ltLast = ltCalls()[ltCalls().length - 1]
+    ok(
+      'LibreTranslate received ⟦N⟧ placeholders, not raw hashtags',
+      Array.isArray(ltLast?.body.q) && /⟦\d+⟧/.test(String((ltLast.body.q as string[])[0])) && !String((ltLast.body.q as string[])[0]).includes('#crypto'),
+      JSON.stringify(ltLast?.body.q),
+    )
   }
 
   __resetTranslationCaches()

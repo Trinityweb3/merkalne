@@ -89,6 +89,10 @@ services:
       DONATION_SOL_ADDRESS: ${DONATION_SOL_ADDRESS:-}
       DONATION_BTC_ADDRESS: ${DONATION_BTC_ADDRESS:-}
       DONATION_USDT_EVM_ADDRESS: ${DONATION_USDT_EVM_ADDRESS:-}
+      # Team social links on /about (empty = card renders without a link)
+      SOCIAL_VAZIMA_URL: ${SOCIAL_VAZIMA_URL:-}
+      SOCIAL_TRINITY_URL: ${SOCIAL_TRINITY_URL:-}
+      SOCIAL_GROBOFHIK_URL: ${SOCIAL_GROBOFHIK_URL:-}
     depends_on:
       db:
         condition: service_healthy

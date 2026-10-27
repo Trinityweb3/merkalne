@@ -5,8 +5,10 @@ import { Link } from '@/i18n/navigation'
 import { listPosts, serializePost } from '@/lib/posts'
 import { localizePostList } from '@/lib/localize'
 import { POST_SECTIONS, SECTION_META, type PostSection } from '@/lib/constants'
+import { SECTION_FILTERS } from '@/lib/section-filters'
+import type { Messages } from '@/i18n/messages/en'
 import { postListQuerySchema } from '@/lib/validation'
-import { SectionFilters, SECTION_FILTERS } from '@/components/site/section-filters'
+import { SectionFilters } from '@/components/site/section-filters'
 import { PostListClient } from '@/components/site/post-list-client'
 import { SupportBanner } from '@/components/site/support-banner'
 import { SECTION_ICONS } from '@/components/site/section-head'
@@ -37,8 +39,19 @@ export default async function SectionPage({ params, searchParams }: PageProps) {
   if (!isSection(section)) notFound()
   const meta = SECTION_META[section]
   const Icon = SECTION_ICONS[section]
-  const t = await getTranslations('common')
-  const tb = await getTranslations('blog')
+  const t = await getTranslations({ locale, namespace: 'common' })
+  const tb = await getTranslations({ locale, namespace: 'blog' })
+  const ts = await getTranslations({ locale, namespace: 'sections' })
+  // Section descriptions live in the `sections` namespace; the TITLE stays
+  // English everywhere (functional identifier).
+  const SECTION_DESC_KEYS: Record<PostSection, keyof Messages['sections']> = {
+    'intern-junior': 'internJuniorDesc',
+    'mid-senior': 'midSeniorDesc',
+    opportunities: 'opportunitiesDesc',
+    markets: 'marketsDesc',
+    insights: 'insightsDesc',
+    blog: 'blogDesc',
+  }
 
   const query = postListQuerySchema.parse({
     section,
@@ -55,7 +68,7 @@ export default async function SectionPage({ params, searchParams }: PageProps) {
 
   return (
     <div className="container page">
-      <nav className="breadcrumb" aria-label="Breadcrumb">
+      <nav className="breadcrumb" aria-label={t('breadcrumb')}>
         <Link href="/">{t('home')}</Link>
         <span aria-hidden>/</span>
         <span style={{ color: 'var(--foreground)' }}>{meta.title}</span>
@@ -68,7 +81,7 @@ export default async function SectionPage({ params, searchParams }: PageProps) {
           </span>
           <div>
             <h1>{meta.title}</h1>
-            <p>{meta.description}</p>
+            <p>{ts(SECTION_DESC_KEYS[section])}</p>
           </div>
         </div>
         {section === 'blog' ? (
@@ -93,7 +106,7 @@ export default async function SectionPage({ params, searchParams }: PageProps) {
         emptyText={
           section === 'blog'
             ? tb('noPostsText')
-            : 'Nothing matches the selected filters. Try clearing them, or check back soon.'
+            : ts('emptyFiltered')
         }
       />
 

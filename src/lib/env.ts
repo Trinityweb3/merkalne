@@ -14,6 +14,17 @@ function emptyToUndefined(v: unknown): unknown {
 
 const optionalStr = z.preprocess(emptyToUndefined, z.string().optional())
 
+/** Optional http(s) URL — empty = unset; trailing slashes trimmed. */
+const optionalHttpUrl = z.preprocess(
+  emptyToUndefined,
+  z
+    .string()
+    .trim()
+    .regex(/^https?:\/\/.+/, 'must be an http(s) URL, e.g. https://t.me/your_handle')
+    .transform((v) => v.replace(/\/+$/, ''))
+    .optional(),
+)
+
 /** Optional donation addresses — validated only when set (loose, format-level). */
 const optionalAddress = (min: number, max: number) =>
   z.preprocess(
@@ -56,6 +67,11 @@ const envSchema = z.object({
   DONATION_SOL_ADDRESS: optionalAddress(32, 48),
   DONATION_BTC_ADDRESS: optionalAddress(26, 62),
   DONATION_USDT_EVM_ADDRESS: optionalAddress(42, 42),
+  // Team social links on /about (Vazima / Trinity / Grobofhik). Optional
+  // http(s) URLs — a member without a link renders a non-clickable card.
+  SOCIAL_VAZIMA_URL: optionalHttpUrl,
+  SOCIAL_TRINITY_URL: optionalHttpUrl,
+  SOCIAL_GROBOFHIK_URL: optionalHttpUrl,
   // Machine translation of job content. LLM providers are tried in priority
   // order (Groq → DeepSeek → Gemini); self-hosted LibreTranslate is the final
   // fallback. All keys optional — empty/absent = that provider is skipped;

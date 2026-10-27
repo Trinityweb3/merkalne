@@ -5,6 +5,12 @@
  *
  * The mock (Bun.serve on :5001) counts /translate calls so the test can prove
  * the DB cache actually prevents repeat translation work.
+ *
+ * HASHTAG POLICY: tags are functional identifiers — they are NEVER
+ * translated (they render as hashtags and power /search?q=%23tag lookups).
+ * Lists translate title + snippet; articles translate title + body. Inline
+ * hashtags inside those texts are protected with ⟦N⟧ placeholders and come
+ * back byte-identically in every locale.
  */
 import { PrismaClient } from '@prisma/client'
 
@@ -56,7 +62,8 @@ async function main() {
   const BODY = 'This body exists to prove the full-granularity translation path works end to end.'
 
   // Clean slate: only OUR posts in markets → deterministic translate-call
-  // counts (the list localizes title + snippet + tags for every post).
+  // counts (the list localizes title + snippet for every post; tags stay
+  // English by policy).
   await db.post.deleteMany({ where: { section: 'markets' } })
   await db.post.deleteMany({ where: { OR: [{ slug: SLUG }, { title: TITLE }] } })
 
@@ -79,14 +86,18 @@ async function main() {
   const mine1 = b1.data?.posts?.find((p) => p.slug === SLUG)
   ok('ru list shows translated title', mine1?.title === `[RU] ${TITLE}`, JSON.stringify(mine1?.title))
   ok('ru list shows translated SNIPPET (card excerpt)', mine1?.snippet === `[RU] ${makeSnippet(BODY)}`, JSON.stringify(mine1?.snippet))
-  ok('ru list shows translated TAGS', JSON.stringify(mine1?.tags) === JSON.stringify(['[ru] rust', '[ru] remote']), JSON.stringify(mine1?.tags))
+  ok(
+    'ru list keeps TAGS in English (hashtag policy — search/filter consistency)',
+    JSON.stringify(mine1?.tags) === JSON.stringify(['rust', 'remote']),
+    JSON.stringify(mine1?.tags),
+  )
   ok('mock received exactly one /translate call (batched)', translateCalls === 1, `calls=${translateCalls}`)
 
   const stored = await db.post.findUnique({ where: { id: post.id }, select: { translations: true } })
   const ruCache = (stored?.translations as Record<string, { title?: string; snippet?: string; tags?: string[] }> | null)?.ru
   ok('translation persisted to Post.translations.ru.title', ruCache?.title === `[RU] ${TITLE}`, JSON.stringify(stored?.translations))
   ok('snippet persisted to Post.translations.ru.snippet', ruCache?.snippet === `[RU] ${makeSnippet(BODY)}`, JSON.stringify(ruCache?.snippet))
-  ok('tags persisted to Post.translations.ru.tags', JSON.stringify(ruCache?.tags) === JSON.stringify(['[RU] rust', '[RU] remote']), JSON.stringify(ruCache?.tags))
+  ok('tags are NOT persisted to the translation cache (policy)', ruCache?.tags === undefined, JSON.stringify(ruCache?.tags))
   console.log('— 2. second list request (cache HIT — no new translate calls) —')
   const r2 = await fetch(`${ORIGIN}/api/posts?section=markets&locale=ru&limit=50`)
   const b2 = (await r2.json()) as { data?: { posts?: Array<{ title: string; slug: string }> } }
@@ -101,11 +112,11 @@ async function main() {
   ok('article shows translated title', html1.includes('[RU] Translation Pipeline Test Post'), 'translated title not in HTML')
   ok('article shows translated body', html1.includes('[RU] This body exists'), 'translated body not in HTML')
   ok(
-    'article shows translated tags',
-    // NOTE: no '#' in the needle — React SSR splits "#"+{tag} into adjacent
-    // text nodes and inserts an HTML comment between them.
-    html1.includes('[ru] rust') && html1.includes('[ru] remote'),
-    'translated tags not in HTML',
+    'article keeps hashtags in English (hashtag policy)',
+    // NOTE: no space in the needle — React SSR renders "#"+{tag} as adjacent
+    // text nodes with an HTML comment between them.
+    html1.includes('#<!-- -->rust') && html1.includes('#<!-- -->remote'),
+    'English hashtags not found in HTML',
   )
 
   const storedFull = await db.post.findUnique({ where: { id: post.id }, select: { translations: true } })
@@ -156,10 +167,10 @@ async function main() {
     JSON.stringify(mine7?.title),
   )
   ok(
-    'glossary protects tags too — the term #defi survives translation intact',
-    // The mock prefixes every translated string with "[ru] " — the jargon
-    // term itself must come back UNTRANSLATED ("defi"), not machine-mangled.
-    JSON.stringify(mine7?.tags) === JSON.stringify(['[ru] defi']),
+    'tags stay English — #defi is never sent to the translator',
+    // Tags are functional identifiers: the API must serve the raw English
+    // tag, not a machine-translated variant.
+    JSON.stringify(mine7?.tags) === JSON.stringify(['defi']),
     JSON.stringify(mine7?.tags),
   )
   const sentQ = Array.isArray(lastTranslateQ) ? lastTranslateQ : [String(lastTranslateQ ?? '')]
@@ -186,6 +197,57 @@ async function main() {
   )
   ok('ru body protects Layer 2 and DEX too', html8.includes('Layer 2') && html8.includes('DEX'), 'built-in terms not restored')
   await db.post.deleteMany({ where: { id: post2.id } })
+
+  console.log('— 9. hashtag policy: inline #hashtags survive translation byte-identically —')
+  const SLUG3 = 'hashtag-e2e-test-post'
+  const TITLE3 = 'Why #crypto needs #rust builders'
+  const BODY3 = 'The #defi ecosystem grows on-chain.'
+  await db.post.deleteMany({ where: { slug: SLUG3 } })
+  const post3 = await db.post.create({
+    data: {
+      title: TITLE3,
+      slug: SLUG3,
+      section: 'markets',
+      status: 'published',
+      body: BODY3,
+      tags: 'crypto,rust,defi',
+      author: { connectOrCreate: { where: { email: 'translate-e2e@test.local' }, create: { email: 'translate-e2e@test.local', passwordHash: 'x', name: 'E2E' } } },
+    },
+  })
+  const r9 = await fetch(`${ORIGIN}/api/posts?section=markets&locale=ru&limit=50`)
+  const b9 = (await r9.json()) as { data?: { posts?: Array<{ title: string; slug: string; snippet?: string; tags?: string[] }> } }
+  const mine9 = b9.data?.posts?.find((p) => p.slug === SLUG3)
+  ok(
+    'translated title keeps inline hashtags byte-identical',
+    mine9?.title === `[RU] ${TITLE3}`,
+    JSON.stringify(mine9?.title),
+  )
+  ok(
+    'translated snippet matches the derived English snippet',
+    // NOTE: snippet() strips "#" by design — inline hashtags only ever reach
+    // the translator inside titles and bodies.
+    mine9?.snippet === `[RU] ${makeSnippet(BODY3)}`,
+    JSON.stringify(mine9?.snippet),
+  )
+  ok(
+    'card tags stay English (hashtag policy)',
+    JSON.stringify(mine9?.tags) === JSON.stringify(['crypto', 'rust', 'defi']),
+    JSON.stringify(mine9?.tags),
+  )
+  const sentQ9 = Array.isArray(lastTranslateQ) ? lastTranslateQ : [String(lastTranslateQ ?? '')]
+  const protectedTitle9 = sentQ9.find((s) => s.includes('needs'))
+  ok(
+    'mock received ⟦N⟧ placeholders instead of #hashtags (protection proof)',
+    Boolean(
+      protectedTitle9 &&
+        /⟦\d+⟧/.test(protectedTitle9) &&
+        !protectedTitle9.includes('#crypto') &&
+        !protectedTitle9.includes('#rust'),
+    ),
+    JSON.stringify(protectedTitle9),
+  )
+  ok('no placeholder leaked into the served title', !mine9?.title.includes('⟦'), JSON.stringify(mine9?.title))
+  await db.post.deleteMany({ where: { id: post3.id } })
 
   console.log(`\nlanguages calls: ${languagesCalls}, translate calls: ${translateCalls}`)
   console.log(failures === 0 ? 'ALL PASS' : `${failures} FAILURES`)

@@ -12,14 +12,20 @@
  *      break a page
  *
  * Granularity (which fields a surface translates):
- *   • lists (section pages, home rails, sidebars) — title + SNIPPET + TAGS.
+ *   • lists (section pages, home rails, sidebars) — title + SNIPPET.
  *     The card snippet used to be derived from the English body at render
  *     time, which is why localized cards showed translated titles next to
- *     English snippets and English hashtags — the "killer feature" bug.
- *     The translated snippet is cached alongside the title; the body itself
- *     stays English on lists (translating 9 full bodies per list view would
- *     dwarf the render).
- *   • article pages — title + BODY + tags (the full granularity).
+ *     English snippets — the "killer feature" bug. The translated snippet is
+ *     cached alongside the title; the body itself stays English on lists
+ *     (translating 9 full bodies per list view would dwarf the render).
+ *   • article pages — title + BODY (the full granularity).
+ *
+ * TAGS ARE NEVER TRANSLATED (hashtag policy): tags render as hashtags
+ * (#crypto, #defi …), feed /search?q=%23tag lookups and the tag filters, and
+ * are therefore functional identifiers — they stay English in every locale.
+ * Inline hashtags inside titles/bodies/snippets are protected separately in
+ * translate.ts (⟦N⟧ placeholders). Previously-cached translated tags in
+ * Post.translations are IGNORED (not applied), so old cache rows are inert.
  *
  * Latency contract (production, CPU-bound self-hosted LibreTranslate):
  *   • cache hits are served with ZERO network I/O;
@@ -33,7 +39,7 @@
  */
 import type { Prisma } from '@prisma/client'
 import { db } from '@/lib/db'
-import { parseTags, snippet } from '@/lib/utils'
+import { snippet } from '@/lib/utils'
 import { translateBatch, localeTranslatable, translationConfigured } from '@/lib/translate'
 
 /** Fields of a post we machine-translate. */
@@ -42,7 +48,12 @@ export interface PostTranslation {
   body?: string
   /** Card snippet (plain-text excerpt) — used by list pages. */
   snippet?: string
-  /** Translated hashtags, in the same order as the source tags. */
+  /**
+   * Translated hashtags (LEGACY). No longer produced or applied — tags are
+   * functional identifiers and stay English in every locale (hashtag
+   * policy). Kept in the interface for backwards compatibility with rows
+   * already cached in Post.translations; parseMap still tolerates the field.
+   */
   tags?: string[]
 }
 
@@ -128,14 +139,14 @@ function saveTranslation(postId: string, locale: string, patch: PostTranslation)
 }
 
 // ---------------------------------------------------------------------------
-// List granularity: title + snippet + tags
+// List granularity: title + snippet
 // ---------------------------------------------------------------------------
 
 /**
- * Localize a list of posts (title + snippet + tags — everything a card
- * shows). Returns NEW objects carrying an optional `snippet` field (the
- * translated card excerpt; components fall back to the English body when
- * absent); the inputs are untouched.
+ * Localize a list of posts (title + snippet — everything a card shows except
+ * the hashtags, which always stay English). Returns NEW objects carrying an
+ * optional `snippet` field (the translated card excerpt; components fall
+ * back to the English body when absent); the inputs are untouched.
  */
 export async function localizePostList<T extends LocalizablePost>(
   posts: T[],
@@ -148,20 +159,17 @@ export async function localizePostList<T extends LocalizablePost>(
     const maps = posts.map((p) => parseMap(p.translations)[locale] ?? {})
 
     // Collect every missing field as one batch job (post index, what to do
-    // with the result, the English source string).
+    // with the result, the English source string). Tags are deliberately
+    // absent: they render as hashtags and must stay English everywhere.
     interface Task {
       i: number
-      kind: 'title' | 'snippet' | 'tag'
+      kind: 'title' | 'snippet'
       source: string
     }
     const tasks: Task[] = []
     posts.forEach((p, i) => {
       if (!maps[i].title) tasks.push({ i, kind: 'title', source: p.title })
       if (!maps[i].snippet) tasks.push({ i, kind: 'snippet', source: snippet(p.body) })
-      const tags = parseTags(p.tags)
-      if (tags.length > 0 && (maps[i].tags?.length ?? 0) !== tags.length) {
-        for (const tag of tags) tasks.push({ i, kind: 'tag', source: tag })
-      }
     })
 
     const fill = async (): Promise<PostTranslation[] | null> => {
@@ -176,8 +184,7 @@ export async function localizePostList<T extends LocalizablePost>(
         const v = translated[k]
         if (!v || !v.trim()) return
         if (t.kind === 'title') patches[t.i].title = v
-        else if (t.kind === 'snippet') patches[t.i].snippet = v
-        else patches[t.i].tags = [...(patches[t.i].tags ?? []), v]
+        else patches[t.i].snippet = v
       })
       return patches
     }
@@ -196,7 +203,8 @@ export async function localizePostList<T extends LocalizablePost>(
         const out = { ...p } as T & { snippet?: string }
         if (t.title) out.title = t.title
         if (t.snippet) out.snippet = t.snippet
-        if (t.tags && t.tags.length > 0) out.tags = t.tags.join(',')
+        // NOTE: t.tags (legacy translated tags) is deliberately NOT applied —
+        // hashtags stay English in every locale.
         return out
       })
     })
@@ -206,43 +214,33 @@ export async function localizePostList<T extends LocalizablePost>(
 }
 
 // ---------------------------------------------------------------------------
-// Article granularity: title + body + tags
+// Article granularity: title + body
 // ---------------------------------------------------------------------------
 
 /**
- * Localize ONE post fully (title + body + tags — article pages). Related/
- * sibling posts should use localizePostList instead (title + snippet + tags).
+ * Localize ONE post fully (title + body — article pages). Tags are never
+ * translated (hashtag policy — see the file header). Related/sibling posts
+ * should use localizePostList instead (title + snippet).
  */
 export async function localizePostFull<T extends LocalizablePost>(post: T, locale: string): Promise<T> {
   if (locale === 'en' || !translationConfigured()) return post
   if (!(await localeTranslatable(locale))) return post
 
   const map = parseMap(post.translations)[locale] ?? {}
-  const tags = parseTags(post.tags)
 
   const needTitle = !map.title
   const bodyEligible = post.body.length > 0 && post.body.length <= MAX_TRANSLATABLE_BODY
   const needBody = bodyEligible && !map.body
-  const needTags = tags.length > 0 && (map.tags?.length ?? 0) !== tags.length
-  if (!needTitle && !needBody && !needTags) return post
+  if (!needTitle && !needBody) return post
 
-  // FAST lane: title + tags (short strings translate quickly, so they are
-  // most likely to land inside the render budget).
+  // FAST lane: the title (short strings translate quickly, so they are most
+  // likely to land inside the render budget).
   const fastFill = async (): Promise<PostTranslation | null> => {
-    const sources: string[] = []
-    if (needTitle) sources.push(post.title)
-    if (needTags) sources.push(...tags)
-    if (sources.length === 0) return {}
-    const translated = await translateBatch(sources, locale)
+    if (!needTitle) return {}
+    const translated = await translateBatch([post.title], locale)
     if (!translated) return null
     const patch: PostTranslation = {}
-    let k = 0
-    if (needTitle && translated[k]?.trim()) patch.title = translated[k]
-    k += needTitle ? 1 : 0
-    if (needTags) {
-      const translatedTags = translated.slice(k, k + tags.length).filter((t) => t?.trim())
-      if (translatedTags.length === tags.length) patch.tags = translatedTags
-    }
+    if (translated[0]?.trim()) patch.title = translated[0]
     return patch
   }
 
@@ -282,6 +280,8 @@ export async function localizePostFull<T extends LocalizablePost>(post: T, local
     ...post,
     title: merged.title ?? post.title,
     body: merged.body ?? post.body,
-    tags: merged.tags && merged.tags.length > 0 ? merged.tags.join(',') : post.tags,
+    // Tags stay English in every locale (hashtag policy); legacy translated
+    // tags in the cache are deliberately ignored.
+    tags: post.tags,
   }
 }

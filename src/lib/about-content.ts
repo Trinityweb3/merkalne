@@ -7,44 +7,68 @@
  *
  * The daily STATISTICS block in between is different: it is computed
  * automatically (see src/lib/stats/*) and is NOT configured here.
+ *
+ * i18n: every static LABEL on /about lives in the dictionaries
+ * (src/i18n/messages/*.ts, namespace `about`) — team role labels, pillar
+ * texts, section headers. This file carries only the DATA (names, links,
+ * video ids). Team social links come from the environment
+ * (SOCIAL_VAZIMA_URL / SOCIAL_TRINITY_URL / SOCIAL_GROBOFHIK_URL) so they
+ * can be changed without a rebuild.
  */
+import { env } from './env'
 
 // ---------------------------------------------------------------------------
 // Team
 // ---------------------------------------------------------------------------
 
+/** Keys of the `about` dictionary namespace used for role labels. */
+export type TeamRoleKey = 'roleCeo' | 'roleProgrammer'
+
 export interface TeamMember {
   /** Display name. */
   name: string
-  /** Role shown under the name, e.g. "Founder & Editor". */
-  role: string
-  /** Two–four sentences. Shown verbatim on the card. */
-  bio: string
+  /**
+   * Role label — an i18n key (namespace `about`), so the role renders in the
+   * visitor's language. Add new roles to every dictionary file first.
+   */
+  roleKey: TeamRoleKey
+  /**
+   * Two–four sentences. Shown verbatim on the card. Empty/omitted → the
+   * localized "Bio coming soon." placeholder (about.bioPlaceholder).
+   */
+  bio?: string
   /**
    * Optional photo/avatar URL (any public image). When omitted the card
    * renders a generated initials avatar — no placeholder assets needed.
    */
   imageUrl?: string
-  /** Public links: label + URL. Internal paths ("/contact") work too. */
-  links: { label: string; url: string }[]
+  /**
+   * Public profile link. When set the whole card becomes a clickable link
+   * that opens in a new tab. Sourced from the environment per member.
+   */
+  socialUrl?: string
 }
 
 /**
- * Add a card per person. Avatar photos are optional — leave imageUrl out and
- * the initials avatar renders automatically (the "accounts" presence comes
- * from the links, e.g. Telegram / X / GitHub profiles).
+ * The Merklane team. Social links come from env (see the header comment);
+ * avatars and bios are placeholders for now — fill `imageUrl`/`bio` here
+ * when ready.
  */
 export const TEAM_MEMBERS: TeamMember[] = [
   {
-    name: 'McQween',
-    role: 'Founder & Editor',
-    bio: 'Builds and runs Merklane: collects the opportunities, edits every section and keeps the nothing-invented policy honest. Background in Web3 market research and community moderation.',
-    links: [
-      { label: 'Contact', url: '/contact' },
-      // { label: 'Telegram', url: 'https://t.me/your_handle' },
-      // { label: 'X', url: 'https://x.com/your_handle' },
-      // { label: 'GitHub', url: 'https://github.com/your_handle' },
-    ],
+    name: 'Vazima',
+    roleKey: 'roleCeo',
+    socialUrl: env.SOCIAL_VAZIMA_URL,
+  },
+  {
+    name: 'Trinity',
+    roleKey: 'roleProgrammer',
+    socialUrl: env.SOCIAL_TRINITY_URL,
+  },
+  {
+    name: 'Grobofhik',
+    roleKey: 'roleProgrammer',
+    socialUrl: env.SOCIAL_GROBOFHIK_URL,
   },
 ]
 
@@ -79,9 +103,9 @@ export const MONTHLY_RECAPS: MonthlyRecap[] = []
 /**
  * Set `url` to a public PDF (e.g. your object storage / docs link) and the
  * page renders an "Open the deck" button. While null the page honestly says
- * the deck is available on request and points to /contact.
+ * the deck is available on request and points to /contact. The default note
+ * text is localized (about.pitchNote); set `note` to override it verbatim.
  */
 export const PITCH_DECK: { url: string | null; note?: string } = {
   url: null,
-  note: 'What the funding is for, site expenses, roadmap and results — updated with every monthly recap.',
 }

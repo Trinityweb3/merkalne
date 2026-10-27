@@ -2,6 +2,7 @@
 
 import { useRouter, useSearchParams } from 'next/navigation'
 import { useState, useTransition } from 'react'
+import { useTranslations } from 'next-intl'
 import {
   Select,
   SelectContent,
@@ -9,12 +10,25 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { FILTER_OPTIONS } from '@/lib/constants'
+import {
+  EMPLOYMENT_LABEL_KEYS,
+  KIND_LABEL_KEYS,
+  LEVEL_LABEL_KEYS,
+  WORKPLACE_LABEL_KEYS,
+  type PostMetaKey,
+} from '@/lib/post-labels'
+// Server-safe data module — the filter DEFINITIONS must NOT live in this
+// "use client" file: server components importing a plain object from a
+// client module receive a client-reference proxy (Object.keys → []), which
+// silently broke the filter bar until now. See src/lib/section-filters.ts.
+import { SECTION_FILTERS, type FilterDef, type FilterKey } from '@/lib/section-filters'
 
-interface FilterDef {
-  key: 'kind' | 'workplace' | 'employment' | 'level'
-  label: string
-  options: string[]
+/** English DB value → postMeta message key, per filter group (display only). */
+const OPTION_LABEL_KEYS: Record<FilterKey, Record<string, PostMetaKey>> = {
+  kind: KIND_LABEL_KEYS,
+  workplace: WORKPLACE_LABEL_KEYS,
+  employment: EMPLOYMENT_LABEL_KEYS,
+  level: LEVEL_LABEL_KEYS,
 }
 
 /**
@@ -22,8 +36,13 @@ interface FilterDef {
  * URL keeps every choice, so a shared link reproduces the same view).
  * Resetting a filter returns the full list. Only applicable filters render
  * (e.g. no salary filter on Insights, per the product rules).
+ *
+ * Option VALUES stay the raw English identifiers (they go into the URL and
+ * the API); only the visible labels are localized.
  */
 export function SectionFilters({ filters }: { filters: FilterDef[] }) {
+  const t = useTranslations('sections')
+  const tm = useTranslations('postMeta')
   const router = useRouter()
   const searchParams = useSearchParams()
   const [isPending, startTransition] = useTransition()
@@ -55,8 +74,8 @@ export function SectionFilters({ filters }: { filters: FilterDef[] }) {
     })
   }
 
-  const values: Record<FilterDef['key'], string> = { kind, workplace, employment, level }
-  const setters: Record<FilterDef['key'], (v: string) => void> = {
+  const values: Record<FilterKey, string> = { kind, workplace, employment, level }
+  const setters: Record<FilterKey, (v: string) => void> = {
     kind: setKind,
     workplace: setWorkplace,
     employment: setEmployment,
@@ -65,8 +84,12 @@ export function SectionFilters({ filters }: { filters: FilterDef[] }) {
 
   const hasActive = filters.some((f) => values[f.key])
 
+  // Display label for an option; unknown values fall back to the raw string.
+  const optionLabel = (filter: FilterDef, option: string) =>
+    tm(OPTION_LABEL_KEYS[filter.key][option] ?? 'post')
+
   return (
-    <div className="filters" aria-label="Section filters" data-pending={isPending || undefined}>
+    <div className="filters" aria-label={t('filtersAria')} data-pending={isPending || undefined}>
       {filters.map((filter) => (
         <Select
           key={filter.key}
@@ -76,13 +99,13 @@ export function SectionFilters({ filters }: { filters: FilterDef[] }) {
             apply(filter.key, v)
           }}
         >
-          <SelectTrigger aria-label={filter.label}>
-            <SelectValue placeholder={filter.label} />
+          <SelectTrigger aria-label={t(filter.labelKey)}>
+            <SelectValue placeholder={t(filter.labelKey)} />
           </SelectTrigger>
           <SelectContent>
             {filter.options.map((option) => (
               <SelectItem key={option} value={option}>
-                {option}
+                {optionLabel(filter, option)}
               </SelectItem>
             ))}
           </SelectContent>
@@ -94,34 +117,9 @@ export function SectionFilters({ filters }: { filters: FilterDef[] }) {
           className="chip selected"
           onClick={() => startTransition(() => router.push('?', { scroll: false }))}
         >
-          Clear filters ×
+          {t('clearFilters')}
         </button>
       ) : null}
     </div>
   )
-}
-
-export const SECTION_FILTERS: Record<string, FilterDef[]> = {
-  'intern-junior': [
-    { key: 'kind', label: 'Type', options: ['Job', 'Internship', 'Graduate program', 'Hackathon', 'Course', 'Learn & Earn'] },
-    { key: 'workplace', label: 'Remote / On-site', options: [...FILTER_OPTIONS.workplace] },
-    { key: 'employment', label: 'Employment', options: [...FILTER_OPTIONS.employment] },
-    { key: 'level', label: 'Level', options: ['Intern', 'Junior'] },
-  ],
-  'mid-senior': [
-    { key: 'kind', label: 'Type', options: ['Job'] },
-    { key: 'workplace', label: 'Remote / On-site', options: [...FILTER_OPTIONS.workplace] },
-    { key: 'employment', label: 'Employment', options: [...FILTER_OPTIONS.employment] },
-    { key: 'level', label: 'Level', options: ['Mid', 'Senior', 'Lead', 'Director'] },
-  ],
-  opportunities: [
-    { key: 'kind', label: 'Activity', options: ['Testnet', 'Quest', 'Campaign', 'Learn & Earn', 'Airdrop'] },
-  ],
-  markets: [
-    { key: 'kind', label: 'Event type', options: ['Volume alert', 'Analysis', 'News', 'Research'] },
-  ],
-  insights: [
-    { key: 'kind', label: 'Material type', options: ['Career guide', 'Research', 'Explainer', 'Opinion'] },
-  ],
-  blog: [{ key: 'kind', label: 'Type', options: ['Article', 'Tutorial', 'Opinion', 'Update'] }],
 }

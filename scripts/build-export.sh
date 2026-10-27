@@ -175,8 +175,10 @@ assert_file_contains "${ROOT}/.env.example" 'GOOGLE_AI_API_KEY=""' \
   ".env.example: Gemini key documented"
 assert_file_contains "${ROOT}/docker-compose.yml" 'GROQ_API_KEY' \
   "docker-compose: Groq key passed to the app service"
-assert_file_contains "${ROOT}/src/app/[locale]/about/page.tsx" 'Translation via' \
-  "about page: translation provider indicator rendered"
+assert_file_contains "${ROOT}/src/app/[locale]/about/page.tsx" "t('translationVia'" \
+  "about page: translation provider indicator rendered (i18n key translationVia)"
+assert_file_contains "${ROOT}/src/i18n/messages/en.ts" 'translationVia:' \
+  "i18n en.ts: translation provider indicator message present"
 [ -f "${ROOT}/scripts/test-llm-translation.ts" ] && echo "  [ok]   LLM provider chain test present (scripts/test-llm-translation.ts)" \
   || { echo "  [FAIL] scripts/test-llm-translation.ts missing"; fail=1; }
 if grep -q 'GROQ_API_KEY' "${ROOT}/worker/worker.ts" 2>/dev/null; then
@@ -185,6 +187,68 @@ if grep -q 'GROQ_API_KEY' "${ROOT}/worker/worker.ts" 2>/dev/null; then
 else
   echo "  [ok]   worker untouched by the translation provider chain"
 fi
+# --- Hashtag policy (#crypto is a functional identifier — never translated) ---
+assert_file_contains "${ROOT}/src/lib/translate.ts" 'HASHTAG_RE' \
+  "translate.ts: hashtag protection regex present (#crypto stays English)"
+assert_file_contains "${ROOT}/src/lib/translate.ts" 'hashtags (words starting with #' \
+  "translate.ts: LLM system prompt explicitly protects hashtags"
+assert_file_contains "${ROOT}/src/lib/localize.ts" 'hashtag policy' \
+  "localize.ts: tag translation removed (hashtag policy documented)"
+# --- Section names stay English in EVERY locale (search/filter/routing) -------
+for dict in "${ROOT}"/src/i18n/messages/*.ts; do
+  dict_name="$(basename "${dict}")"
+  if grep -q "internJunior: 'Intern/Junior'" "${dict}"; then
+    echo "  [ok]   i18n ${dict_name}: section name 'Intern/Junior' stays English"
+  else
+    echo "  [FAIL] i18n ${dict_name}: 'internJunior' must stay English (routing consistency)"
+    fail=1
+  fi
+done
+# --- Global UI i18n (hero, search, quick links, cards, banner) ----------------
+assert_file_contains "${ROOT}/src/app/[locale]/page.tsx" "namespace: 'hero'" \
+  "home page: hero strings localized via next-intl"
+assert_file_contains "${ROOT}/src/app/[locale]/page.tsx" "namespace: 'quickLinks'" \
+  "home page: quick links localized via next-intl"
+assert_file_contains "${ROOT}/src/components/site/search-box.tsx" "useTranslations('search')" \
+  "search box: placeholder + button localized via next-intl"
+assert_file_contains "${ROOT}/src/components/site/post-card.tsx" "useTranslations('postMeta')" \
+  "post-card: metadata labels (Job/Internship/Remote/…) localized via next-intl"
+assert_file_contains "${ROOT}/src/components/site/support-banner.tsx" "useTranslations('support')" \
+  "support banner: strings localized via next-intl"
+assert_file_contains "${ROOT}/src/components/site/section-head.tsx" 'viewAll' \
+  "section-head: 'View all' link localized via next-intl"
+# --- Job-post metadata rendering (pipe-separated line → one item per line) ----
+assert_file_contains "${ROOT}/src/components/site/article-body.tsx" 'splitMetadataLines' \
+  "article-body: pipe-separated metadata split at render time"
+assert_file_contains "${ROOT}/src/components/site/article-body.tsx" 'METADATA_EMOJI_RE' \
+  "article-body: split gated on metadata emojis (📍🕐💰 — markdown tables safe)"
+# --- Team data + social links (Vazima / Trinity / Grobofhik) ------------------
+assert_file_contains "${ROOT}/src/lib/about-content.ts" 'SOCIAL_VAZIMA_URL' \
+  "about-content: Vazima social link read from env"
+assert_file_contains "${ROOT}/src/lib/about-content.ts" 'SOCIAL_TRINITY_URL' \
+  "about-content: Trinity social link read from env"
+assert_file_contains "${ROOT}/src/lib/about-content.ts" 'SOCIAL_GROBOFHIK_URL' \
+  "about-content: Grobofhik social link read from env"
+assert_file_contains "${ROOT}/.env.example" 'SOCIAL_VAZIMA_URL=""' \
+  ".env.example: team social link variables documented"
+assert_file_contains "${ROOT}/.env.example" 'SOCIAL_TRINITY_URL=""' \
+  ".env.example: Trinity social link documented"
+assert_file_contains "${ROOT}/.env.example" 'SOCIAL_GROBOFHIK_URL=""' \
+  ".env.example: Grobofhik social link documented"
+assert_file_contains "${ROOT}/docker-compose.yml" 'SOCIAL_VAZIMA_URL: ${SOCIAL_VAZIMA_URL:-}' \
+  "docker-compose: team social links passed to the app service"
+assert_file_contains "${ROOT}/src/app/[locale]/about/page.tsx" 'target="_blank"' \
+  "about page: team cards open social links in a new tab"
+assert_file_contains "${ROOT}/src/app/[locale]/about/page.tsx" 'rel="noopener noreferrer"' \
+  "about page: social links carry rel=noopener noreferrer"
+if grep -rq 'McQween' "${ROOT}/src" "${ROOT}/.env.example" "${ROOT}/docker-compose.yml" 2>/dev/null; then
+  echo "  [FAIL] placeholder team member 'McQween' still referenced"
+  fail=1
+else
+  echo "  [ok]   placeholder team member 'McQween' fully removed"
+fi
+[ -f "${ROOT}/scripts/ui18n-codegen/check-messages.ts" ] && echo "  [ok]   i18n ICU message compile check present" \
+  || { echo "  [FAIL] scripts/ui18n-codegen/check-messages.ts missing"; fail=1; }
 # Run the same stale-merge guard the Docker build runs — the sandbox tree
 # itself must be clean before it is bundled.
 if sh "${ROOT}/docker/check-app-tree.sh" >/dev/null 2>&1; then
@@ -306,8 +370,8 @@ assert_file_contains "${VERIFY_DIR}/merklane/.env.example" 'GOOGLE_AI_API_KEY=""
   "archive: .env.example documents GOOGLE_AI_API_KEY"
 assert_file_contains "${VERIFY_DIR}/merklane/docker-compose.yml" 'GROQ_API_KEY' \
   "archive: compose passes the LLM provider keys"
-assert_file_contains "${VERIFY_DIR}/merklane/src/app/[locale]/about/page.tsx" 'Translation via' \
-  "archive: About page carries the provider indicator"
+assert_file_contains "${VERIFY_DIR}/merklane/src/app/[locale]/about/page.tsx" "t('translationVia'" \
+  "archive: About page carries the provider indicator (i18n)"
 [ -f "${VERIFY_DIR}/merklane/scripts/test-llm-translation.ts" ] && echo "  [ok]   archive: LLM provider chain test present" \
   || { echo "  [FAIL] archive: scripts/test-llm-translation.ts MISSING"; archive_fail=1; }
 [ -f "${VERIFY_DIR}/merklane/config/translation-glossary.json" ] && echo "  [ok]   archive: active glossary config present" \
@@ -336,6 +400,37 @@ assert_file_contains "${VERIFY_DIR}/merklane/Dockerfile" 'COPY --from=builder --
   "archive: Dockerfile prisma COPY intact"
 assert_file_contains "${VERIFY_DIR}/merklane/Dockerfile" 'COPY --from=builder --chown=merklane:merklane /app/node_modules ./node_modules' \
   "archive: Dockerfile FULL node_modules COPY intact"
+# --- Hashtag policy / UI i18n / metadata split / team — IN-ARCHIVE -------------
+assert_file_contains "${VERIFY_DIR}/merklane/src/lib/translate.ts" 'HASHTAG_RE' \
+  "archive: hashtag protection ships (functional identifiers stay English)"
+assert_file_contains "${VERIFY_DIR}/merklane/src/lib/translate.ts" 'hashtags (words starting with #' \
+  "archive: LLM system prompt protects hashtags"
+assert_file_contains "${VERIFY_DIR}/merklane/src/lib/localize.ts" 'hashtag policy' \
+  "archive: tags-not-translated policy ships"
+assert_file_contains "${VERIFY_DIR}/merklane/src/i18n/messages/ru.ts" "internJunior: 'Intern/Junior'" \
+  "archive: ru dictionary keeps section names English"
+assert_file_contains "${VERIFY_DIR}/merklane/src/i18n/messages/ja.ts" "internJunior: 'Intern/Junior'" \
+  "archive: ja dictionary keeps section names English"
+assert_file_contains "${VERIFY_DIR}/merklane/src/components/site/article-body.tsx" 'splitMetadataLines' \
+  "archive: job-post metadata split ships"
+assert_file_contains "${VERIFY_DIR}/merklane/src/components/site/article-body.tsx" 'METADATA_EMOJI_RE' \
+  "archive: metadata split emoji gate ships"
+assert_file_contains "${VERIFY_DIR}/merklane/src/lib/about-content.ts" 'SOCIAL_VAZIMA_URL' \
+  "archive: team social env wiring ships"
+assert_file_contains "${VERIFY_DIR}/merklane/.env.example" 'SOCIAL_VAZIMA_URL=""' \
+  "archive: .env.example documents team social links"
+assert_file_contains "${VERIFY_DIR}/merklane/docker-compose.yml" 'SOCIAL_TRINITY_URL' \
+  "archive: compose passes team social links"
+assert_file_contains "${VERIFY_DIR}/merklane/src/components/site/post-card.tsx" "useTranslations('postMeta')" \
+  "archive: post-card metadata localization ships"
+assert_file_contains "${VERIFY_DIR}/merklane/src/components/site/support-banner.tsx" "useTranslations('support')" \
+  "archive: support banner localization ships"
+if grep -rq 'McQween' "${VERIFY_DIR}/merklane/src" 2>/dev/null; then
+  echo "  [FAIL] archive: placeholder 'McQween' still present"
+  archive_fail=1
+else
+  echo "  [ok]   archive: no 'McQween' placeholder (team is Vazima/Trinity/Grobofhik)"
+fi
 # Cross-check: every file listed in the archive MANIFEST exists after extraction
 MANIFEST_COUNT="$(wc -l < "${VERIFY_DIR}/merklane/MANIFEST" | tr -d ' ')"
 MISSING_IN_ARCHIVE="$(cd "${VERIFY_DIR}/merklane" && while IFS= read -r f; do [ -f "${f}" ] || echo "${f}"; done < MANIFEST | head -5)"

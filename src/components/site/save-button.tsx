@@ -2,6 +2,7 @@
 
 import { useRouter } from '@/i18n/navigation'
 import { Link } from '@/i18n/navigation'
+import { useTranslations } from 'next-intl'
 import { Bookmark } from 'lucide-react'
 import { toast } from 'sonner'
 import { useSession } from '@/components/providers/session-provider'
@@ -19,6 +20,7 @@ interface SaveButtonProps {
  * free for every registered user and sync across devices.
  */
 export function SaveButton({ slug, postTitle, size = 18, className }: SaveButtonProps) {
+  const t = useTranslations('save')
   const { user, bookmarkedSlugs, setBookmarked, refresh } = useSession()
   const router = useRouter()
   const saved = bookmarkedSlugs.includes(slug)
@@ -28,10 +30,10 @@ export function SaveButton({ slug, postTitle, size = 18, className }: SaveButton
     e.stopPropagation()
 
     if (!user) {
-      toast('Sign in to save posts', {
-        description: 'Bookmarks are free for registered users and sync across your devices.',
+      toast(t('signInTitle'), {
+        description: t('signInDesc'),
         action: {
-          label: 'Sign in',
+          label: t('signInAction'),
           onClick: () => router.push('/auth?mode=login'),
         },
       })
@@ -47,12 +49,14 @@ export function SaveButton({ slug, postTitle, size = 18, className }: SaveButton
       setBookmarked(slug, result.bookmarked)
       toast.success(
         result.bookmarked
-          ? `Saved${postTitle ? ` “${postTitle.slice(0, 40)}${postTitle.length > 40 ? '…' : ''}”` : ''}`
-          : 'Removed from saved',
+          ? postTitle
+            ? t('savedToast', { title: postTitle.slice(0, 40) + (postTitle.length > 40 ? '…' : '') })
+            : t('savedPlain')
+          : t('removed'),
       )
     } catch (err) {
       setBookmarked(slug, saved)
-      toast.error(err instanceof Error ? err.message : 'Could not save the post')
+      toast.error(err instanceof Error ? err.message : t('failed'))
       void refresh()
     }
   }
@@ -60,9 +64,9 @@ export function SaveButton({ slug, postTitle, size = 18, className }: SaveButton
   return (
     <button
       className={`icon-button ${className ?? ''}`}
-      aria-label={saved ? 'Remove from saved' : 'Save post'}
+      aria-label={saved ? t('removeAria') : t('saveAria')}
       aria-pressed={saved}
-      title={saved ? 'Remove from saved' : 'Save post'}
+      title={saved ? t('removeAria') : t('saveAria')}
       onClick={toggle}
       type="button"
     >

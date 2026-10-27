@@ -221,6 +221,9 @@ unconfigured optional features (OAuth buttons, bots) instead of failing silently
 | 13a | `DONATION_SOL_ADDRESS` | Solana address | Your SOL donation wallet | No — empty hides the wallet from the support sheet |
 | 13b | `DONATION_BTC_ADDRESS` | Bitcoin address | Your BTC donation wallet (legacy/SegWit/Taproot) | No — empty hides it |
 | 13c | `DONATION_USDT_EVM_ADDRESS` | `0x…` (42 chars) | One EVM address for USDT — serves Ethereum, BNB Chain and Arbitrum One | No — when all three donation vars are empty the sheet shows an honest "not configured" notice |
+| 13d | `SOCIAL_VAZIMA_URL` | `https://t.me/…` or any profile URL | Vazima (CEO) team card on `/about` | No — empty = card renders without a link |
+| 13e | `SOCIAL_TRINITY_URL` | any profile URL | Trinity (Programmer) team card on `/about` | No |
+| 13f | `SOCIAL_GROBOFHIK_URL` | any profile URL | Grobofhik (Programmer) team card on `/about` | No |
 
 > **Port note (`DB_HOST_PORT`)** — the compose file publishes the bundled PostgreSQL on `127.0.0.1:5433` by default (`127.0.0.1:${DB_HOST_PORT:-5433}:5432`). The 5433 default exists because a native PostgreSQL on the host typically already owns 5432 — starting the stack then aborts with `failed to bind host port … address already in use`. The container-internal port is always 5432 and the app connects as `db:5432` over the internal network, so this mapping only affects host-side access (`psql -h 127.0.0.1 -p 5433 -U merklane`). Override in `.env` (`DB_HOST_PORT=5432`) if your host port is free, or delete the `ports:` block for hardened deployments.
 
@@ -280,7 +283,7 @@ still fail with `ConnectionRefused` from the containers while working from
 | 33 | `STATS_CHECK_INTERVAL_SECONDS` | `900` | Your choice (min 60) | No (default 900 = 15 min). How often the worker checks whether a snapshot is due |
 | 34 | `STATS_BACKFILL_DAYS` | `7` | Your choice (0–30) | No (default 7). Days of missed snapshots that get backfilled after worker downtime |
 
-> **What is measured (privacy):** one row per deduplicated page view — path, section, a 2-letter country code from proxy headers (`XX` = unknown behind plain Caddy/nginx; Cloudflare's `CF-IPCountry` works automatically) and an **irreversible keyed hash** of IP + browser. No raw IP, no user agent, no user id, no cookies. Do-Not-Track requests are skipped entirely. The numbers appear once a day on `/about`; an admin can force a refresh via `POST /api/admin/stats`. Team cards, monthly recap videos and the pitch-deck link are edited in one file: `src/lib/about-content.ts`.
+> **What is measured (privacy):** one row per deduplicated page view — path, section, a 2-letter country code from proxy headers (`XX` = unknown behind plain Caddy/nginx; Cloudflare's `CF-IPCountry` works automatically) and an **irreversible keyed hash** of IP + browser. No raw IP, no user agent, no user id, no cookies. Do-Not-Track requests are skipped entirely. The numbers appear once a day on `/about`; an admin can force a refresh via `POST /api/admin/stats`. Team social links come from the `SOCIAL_*` env vars above (a card without a URL renders as a plain card); avatars, bios, monthly recap videos and the pitch-deck link are edited in one file: `src/lib/about-content.ts`.
 
 ### Machine translation (Groq/LLM provider chain + LibreTranslate fallback + Web3 glossary)
 
@@ -290,6 +293,15 @@ On any provider failure (rate limit, timeout, bad response) the same request
 falls through to LibreTranslate automatically, and every result is cached
 per language in the database. The active provider is shown on `/about`
 ("Translation via Groq · openai/gpt-oss-120b …").
+
+> **Hashtags are never translated.** `#crypto`, `#defi`, `#rust` … are
+> functional identifiers — they power tag filters and `/search?q=%23tag`
+> lookups — so they stay byte-identical English in every locale: post tags
+> are never sent to the translator, and inline hashtags inside titles and
+> bodies are protected as placeholders during the round trip. Section names
+> (Intern/Junior, Mid/Senior, Opportunities, Markets, Insights, Blog) stay
+> English in every locale for the same reason (routing/DB consistency);
+> everything else on the cards and pages is translated.
 
 | # | Variable | Write this (example) | Where to get it | Required? |
 |---|----------|----------------------|-----------------|-----------|

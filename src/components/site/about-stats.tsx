@@ -1,69 +1,55 @@
 /**
  * Daily statistics block for the About page — renders a StatsSnapshot.
  *
- * PRESENTATION ONLY: every label, window name and number format lives in
- * this file. The snapshot itself (src/lib/stats/types.ts) carries raw
- * numbers + ISO codes, so a future i18n/locale API only needs to translate
- * what this component prints — the data contract never changes. (Today no
- * language endpoint exists, so this renders English, like the whole site.)
+ * PRESENTATION ONLY: every label and number format lives in this file or in
+ * the `about` dictionary namespace (src/i18n/messages/*.ts). The snapshot
+ * itself (src/lib/stats/types.ts) carries raw numbers + ISO codes, so the
+ * data contract never changes — only what this component prints is
+ * localized. Numbers and dates format with the active locale (e.g. native
+ * digits for ar/fa), falling back to en where Intl data is missing.
  */
+import { useLocale, useTranslations } from 'next-intl'
 import { TrendingUp } from 'lucide-react'
 import { SECTION_META, type PostSection } from '@/lib/constants'
 import type { StatsSnapshot, VisitorWindow } from '@/lib/stats/types'
 
-const fmt = new Intl.NumberFormat('en-US')
-
-const MONTHS = [
-  'January', 'February', 'March', 'April', 'May', 'June',
-  'July', 'August', 'September', 'October', 'November', 'December',
-]
-
-/** "October 26, 2026" — always UTC (snapshot dates are UTC midnights). */
-function utcDateLabel(d: Date): string {
-  return `${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}, ${d.getUTCFullYear()}`
+type VisitorWindowKey = Record<VisitorWindow, 'visitors24h' | 'visitors7d' | 'visitors30d' | 'visitors365d'>
+const WINDOW_LABEL_KEYS: VisitorWindowKey = {
+  '24h': 'visitors24h',
+  '7d': 'visitors7d',
+  '30d': 'visitors30d',
+  '365d': 'visitors365d',
+}
+const WINDOW_COMPARE_KEYS: Record<VisitorWindow, 'vsDay' | 'vsWeek' | 'vsMonth' | 'vsYear'> = {
+  '24h': 'vsDay',
+  '7d': 'vsWeek',
+  '30d': 'vsMonth',
+  '365d': 'vsYear',
 }
 
-const WINDOW_META: Record<VisitorWindow, { label: string; compare: string }> = {
-  '24h': { label: 'Unique visitors · last 24 hours', compare: 'vs previous day' },
-  '7d': { label: 'Unique visitors · last 7 days', compare: 'vs previous week' },
-  '30d': { label: 'Unique visitors · last 30 days', compare: 'vs previous month' },
-  '365d': { label: 'Unique visitors · last 12 months', compare: 'vs previous year' },
+/** Page-bucket labels — the `about` namespace keys (non-section pages). */
+const BUCKET_KEYS: Record<string, string> = {
+  home: 'bucket_home',
+  about: 'bucket_about',
+  search: 'bucketSearch',
+  premium: 'bucketPremium',
+  recruiter: 'bucketRecruiter',
+  ads: 'bucketAds',
+  auth: 'bucketAuth',
+  profile: 'bucketProfile',
+  alerts: 'bucketAlerts',
+  contact: 'bucketContact',
+  other: 'bucketOther',
 }
 
-const PAGE_BUCKETS: Record<string, string> = {
-  home: 'Home',
-  about: 'About',
-  search: 'Search',
-  premium: 'Premium',
-  recruiter: 'Premium+ tools',
-  ads: 'Ads',
-  auth: 'Sign in',
-  profile: 'Profile cabinet',
-  alerts: 'Alerts',
-  contact: 'Contact',
-  other: 'Other pages',
-}
-
-function sectionLabel(slug: string): string {
-  if (slug in SECTION_META) return SECTION_META[slug as PostSection].title
-  return PAGE_BUCKETS[slug] ?? slug
-}
-
-let displayNames: Intl.DisplayNames | null = null
-function countryName(code: string): string {
-  if (code === 'XX') return 'Unknown'
-  try {
-    displayNames ??= new Intl.DisplayNames(['en'], { type: 'region' })
-    return displayNames.of(code) ?? code
-  } catch {
-    return code
-  }
-}
-
-/** % change chip: green up / red down / "new" when no baseline exists yet. */
 function Delta({ pct, hasValue }: { pct: number | null; hasValue: boolean }) {
+  const t = useTranslations('about')
   if (pct === null) {
-    return hasValue ? <span className="delta new">new</span> : <span className="delta flat">—</span>
+    return hasValue ? (
+      <span className="delta new">{t('newChip')}</span>
+    ) : (
+      <span className="delta flat">—</span>
+    )
   }
   const up = pct >= 0
   return (
@@ -89,6 +75,35 @@ function BarRow({ label, share, value, delta }: { label: string; share: number; 
 }
 
 export function AboutStats({ asOf, snapshot }: { asOf: Date; snapshot: StatsSnapshot }) {
+  const t = useTranslations('about')
+  const locale = useLocale()
+  // Locale-aware formatting with a safe fallback for exotic Intl data.
+  const fmt = new Intl.NumberFormat(locale)
+  const dateLabel = new Intl.DateTimeFormat(locale, {
+    month: 'long',
+    day: 'numeric',
+    year: 'numeric',
+    timeZone: 'UTC',
+  }).format(asOf)
+
+  /** Section names stay English (functional identifiers); other buckets localize. */
+  const sectionLabel = (slug: string): string => {
+    if (slug in SECTION_META) return SECTION_META[slug as PostSection].title
+    const key = BUCKET_KEYS[slug]
+    return key ? t(key as Parameters<typeof t>[0]) : slug
+  }
+
+  let displayNames: Intl.DisplayNames | null = null
+  const countryName = (code: string): string => {
+    if (code === 'XX') return t('unknownCountry')
+    try {
+      displayNames ??= new Intl.DisplayNames([locale], { type: 'region' })
+      return displayNames.of(code) ?? code
+    } catch {
+      return code
+    }
+  }
+
   const newPostsTotal = snapshot.newPostsBySection.reduce((sum, s) => sum + s.count, 0)
 
   return (
@@ -99,8 +114,8 @@ export function AboutStats({ asOf, snapshot }: { asOf: Date; snapshot: StatsSnap
             <TrendingUp width={18} height={18} />
           </span>
           <div>
-            <h2 id="about-stats">Merklane as of {utcDateLabel(asOf)}</h2>
-            <p>Updated once a day. Percentages compare each window with the equal-length window before it.</p>
+            <h2 id="about-stats" style={{ marginBottom: 8 }}>{t('statsTitle', { date: dateLabel })}</h2>
+            <p>{t('statsSub')}</p>
           </div>
         </div>
       </div>
@@ -109,11 +124,11 @@ export function AboutStats({ asOf, snapshot }: { asOf: Date; snapshot: StatsSnap
       <div className="stat-grid">
         {snapshot.visitors.map((v) => (
           <div className="stat" key={v.window}>
-            <div className="label">{WINDOW_META[v.window].label}</div>
+            <div className="label">{t(WINDOW_LABEL_KEYS[v.window])}</div>
             <div className="value">{fmt.format(v.uniqueVisitors)}</div>
             <div className="detail row" style={{ gap: 8, alignItems: 'center' }}>
               <Delta pct={v.changePct} hasValue={v.uniqueVisitors > 0} />
-              {WINDOW_META[v.window].compare}
+              {t(WINDOW_COMPARE_KEYS[v.window])}
             </div>
           </div>
         ))}
@@ -122,13 +137,13 @@ export function AboutStats({ asOf, snapshot }: { asOf: Date; snapshot: StatsSnap
       <div className="grid-2" style={{ marginTop: 18 }}>
         {/* Page views by section (7 days) */}
         <div className="card">
-          <h3>Page views by section</h3>
+          <h3>{t('viewsTitle')}</h3>
           <p className="muted small" style={{ marginTop: 4 }}>
-            Last 7 days, all visitors
+            {t('viewsSub')}
           </p>
           {snapshot.viewsBySection.length === 0 ? (
             <p className="muted small" style={{ marginTop: 14 }}>
-              No page views recorded in the last 7 days yet.
+              {t('viewsEmpty')}
             </p>
           ) : (
             <div className="bar-list">
@@ -141,13 +156,13 @@ export function AboutStats({ asOf, snapshot }: { asOf: Date; snapshot: StatsSnap
 
         {/* Traffic by country (30 days) */}
         <div className="card">
-          <h3>Traffic by country</h3>
+          <h3>{t('countriesTitle')}</h3>
           <p className="muted small" style={{ marginTop: 4 }}>
-            Last 30 days, unique visitors
+            {t('countriesSub')}
           </p>
           {snapshot.countries.length === 0 ? (
             <p className="muted small" style={{ marginTop: 14 }}>
-              No countries to report yet.
+              {t('countriesEmpty')}
             </p>
           ) : (
             <div className="bar-list">
@@ -168,10 +183,10 @@ export function AboutStats({ asOf, snapshot }: { asOf: Date; snapshot: StatsSnap
       <div className="grid-2" style={{ marginTop: 18 }}>
         {/* New posts (24h) */}
         <div className="card">
-          <h3>New posts in the last 24 hours</h3>
+          <h3>{t('newPostsTitle')}</h3>
           {newPostsTotal === 0 ? (
             <p className="muted small" style={{ marginTop: 12 }}>
-              Nothing was published in the last 24 hours — fresh material lands with the next editorial pass.
+              {t('newPostsEmpty')}
             </p>
           ) : (
             <ul className="kv-list">
@@ -187,42 +202,42 @@ export function AboutStats({ asOf, snapshot }: { asOf: Date; snapshot: StatsSnap
 
         {/* Premium & partners */}
         <div className="card">
-          <h3>Premium & partners</h3>
+          <h3>{t('premiumTitle')}</h3>
           <ul className="kv-list">
             <li>
-              <span>Premium subscribers, active</span>
+              <span>{t('premiumActive')}</span>
               <b>{fmt.format(snapshot.premium.premium)}</b>
             </li>
             <li>
               <span>
-                Premium+ subscribers, active{' '}
-                <span className="muted small">(plan launches with billing)</span>
+                {t('premiumPlusActive')}{' '}
+                <span className="muted small">{t('planBilling')}</span>
               </span>
               <b>{fmt.format(snapshot.premium.premiumPlus)}</b>
             </li>
             <li>
               <span>
-                Ad campaigns running <span className="muted small">(Ads is in waitlist stage)</span>
+                {t('campaignsRunning')} <span className="muted small">{t('adsWaitlistNote')}</span>
               </span>
               <b>{fmt.format(snapshot.advertisers.activeCampaigns)}</b>
             </li>
             <li>
-              <span>Advertisers on the waitlist</span>
+              <span>{t('advertisersWaitlist')}</span>
               <b>{fmt.format(snapshot.advertisers.waitlist)}</b>
             </li>
           </ul>
           <p className="muted small" style={{ marginTop: 12 }}>
-            Site totals: {fmt.format(snapshot.totals.publishedPosts)} published posts ·{' '}
-            {fmt.format(snapshot.totals.comments)} comments · {fmt.format(snapshot.totals.users)} registered users
+            {t('siteTotals', {
+              posts: fmt.format(snapshot.totals.publishedPosts),
+              comments: fmt.format(snapshot.totals.comments),
+              users: fmt.format(snapshot.totals.users),
+            })}
           </p>
         </div>
       </div>
 
       <p className="muted small" style={{ marginTop: 14, lineHeight: 1.7 }}>
-        Methodology: unique visitors are counted with an anonymous, irreversible fingerprint — no accounts, raw
-        addresses or cross-site tracking are involved. Countries come from network geo headers and report
-        “Unknown” when the network provides none. One snapshot is computed per day by the Merklane worker; an
-        admin can refresh it on demand.
+        {t('methodology')}
       </p>
     </section>
   )

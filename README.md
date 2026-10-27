@@ -422,6 +422,9 @@ Builds are secret-free by design: `.dockerignore` excludes `.env*`, so `docker b
 | `DONATION_SOL_ADDRESS` | no | Solana donation wallet (SOL). Shown in the support sheet with a copy button; empty = hidden. |
 | `DONATION_BTC_ADDRESS` | no | Bitcoin donation wallet (BTC) — legacy, SegWit or Taproot format. |
 | `DONATION_USDT_EVM_ADDRESS` | no | Single EVM address for USDT, serving Ethereum, BNB Chain and Arbitrum One (labeled as such). |
+| `SOCIAL_VAZIMA_URL` | no | Team card link for Vazima (CEO) on `/about` — opens in a new tab; empty = card renders without a link. |
+| `SOCIAL_TRINITY_URL` | no | Team card link for Trinity (Programmer) on `/about`. |
+| `SOCIAL_GROBOFHIK_URL` | no | Team card link for Grobofhik (Programmer) on `/about`. |
 
 A line-by-line "where to get it" walkthrough for every variable lives in [POST-EXPORT-GUIDE.md](POST-EXPORT-GUIDE.md).
 
@@ -452,8 +455,8 @@ The whole interface lives under `src/app/[locale]/` with
 - **Job content is machine-translated on demand** (provider chain:
   **Groq → DeepSeek → Gemini → self-hosted LibreTranslate**, DB-cached per
   post+language in `Post.translations`): localized list pages
-  translate **title + card snippet + tags**, article pages translate
-  **title + body + tags** — everything a reader sees. The first uncached view
+  translate **title + card snippet**, article pages translate
+  **title + body** — everything a reader sees except the hashtags. The first uncached view
   waits a bounded few seconds for the translation and falls back to the
   English original while the translation keeps filling the cache in the
   background (the next view is fully localized); any failure (provider down,
@@ -463,11 +466,25 @@ The whole interface lives under `src/app/[locale]/` with
   Retry-After window and LibreTranslate serves meanwhile; the active provider
   is shown on the About page ("Translation via Groq …").
   See “Bots & background workers → Machine translation” and DEPLOYMENT.md §7.
+- **Hashtags are functional identifiers and are NEVER translated**
+  (`#crypto`, `#defi`, `#rust` …): they render as hashtags, power
+  `/search?q=%23tag` lookups and the tag filters, so they stay byte-identical
+  English in every locale. Tags are never sent to the translator and are not
+  persisted to the translation cache; inline hashtags inside titles/bodies/
+  snippets are swapped for ⟦N⟧ placeholders before every request (LLM and
+  LibreTranslate lanes alike) and restored afterwards. Markdown ATX headings
+  (`# Heading`) are not treated as hashtags.
+- **Section names stay English in every locale** (Intern/Junior, Mid/Senior,
+  Opportunities, Markets, Insights, Blog): they double as routing slugs and
+  DB section values, so the i18n keys (`nav.internJunior`, …) return the
+  English string in all 20 dictionaries — keeping search, filtering and URLs
+  consistent. Descriptions under them are translated normally.
 - **LLM translations use a Web3-hardened prompt** (`src/lib/translate.ts`):
   a system prompt fixes industry terminology (DeFi, on-chain, TVL, AMM, DEX,
   DAO, NFT, Layer 2, … — keep the community term, or the English word when
   no established translation exists), pins URLs/`$TICKER`s/handles, demands
-  the exact ⟦N⟧ glossary placeholders back, and returns strict JSON;
+  the exact ⟦N⟧ glossary placeholders back, never translates hashtags
+  (words starting with `#` — search keywords), and returns strict JSON;
   identical strings in a batch are de-duplicated to conserve free-tier
   tokens, and every provider request is serialized with ≈2 s spacing
   (Groq free tier = 30 req/min).

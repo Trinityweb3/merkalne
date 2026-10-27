@@ -40,6 +40,16 @@
  * returns, the placeholders are stitched back out with the per-locale
  * replacement. Cached translations therefore already contain the final,
  * glossary-corrected text.
+ *
+ * Hashtag protection (functional identifiers): words starting with "#"
+ * (#crypto, #defi, #rust …) are swapped for the same ⟦N⟧ placeholders FIRST —
+ * before the glossary pass, so a glossary term inside a hashtag ("#defi")
+ * cannot be split apart — and are restored byte-identically in EVERY locale.
+ * Hashtags are functional identifiers (they feed /search?q=%23tag lookups and
+ * tag filters), so they must never be translated, not even partially. This
+ * runs in BOTH lanes (LLM and LibreTranslate): the placeholder mechanism is
+ * provider-agnostic, and the system prompt additionally instructs the LLM to
+ * leave hashtags alone (belt and suspenders).
  */
 import { env } from './env'
 import { LANGUAGES } from './constants'
@@ -316,13 +326,22 @@ function chunk<T>(items: T[], maxItems: number, maxChars: (t: T) => number, maxC
 }
 
 // ---------------------------------------------------------------------------
-// Glossary protection — ⟦N⟧ placeholders survive machine translation
+// Placeholder protection — ⟦N⟧ tokens survive machine translation
 // ---------------------------------------------------------------------------
 
 /** Placeholder sent to the provider instead of the jargon term. */
 const PLACEHOLDER_RE = /\s?⟦(\d+)⟧\s?/g
 /** Locales written without spaces between words — restore without padding. */
 const NO_SPACE_TARGET_RE = /^(zh|ja|ko|th)/
+
+/**
+ * A hashtag token: "#" immediately followed by a letter/digit/underscore and
+ * then more of the same (#crypto, #defi, #rust, #web3, #1inch). Markdown ATX
+ * headings ("# Title", "## Title") never match because a space follows the
+ * last "#"; an anchor inside a URL ("…/page#section") matches but is supposed
+ * to stay byte-identical anyway, so protecting it is also correct.
+ */
+const HASHTAG_RE = /#[\p{L}\p{N}_][\p{L}\p{N}_]*/gu
 
 /** Regex for one glossary term: unicode-aware boundaries, case-insensitive. */
 function termRegex(term: string): RegExp {
@@ -333,6 +352,48 @@ function termRegex(term: string): RegExp {
 /** Matched source text + the replacement to stitch back in. */
 interface Slot {
   replacement: string
+}
+
+/**
+ * Replace every hashtag (#crypto …) with ⟦N⟧. Hashtags are functional
+ * identifiers — they power /search?q=%23tag lookups and tag filtering — so
+ * they must come back byte-identically in every locale. Runs BEFORE the
+ * glossary pass so a glossary term inside a hashtag ("#defi" when "DeFi" is
+ * a protected term) can never be split apart.
+ */
+function protectHashtags(text: string, slots: Slot[]): string {
+  return text.replace(HASHTAG_RE, (matched) => {
+    slots.push({ replacement: matched }) // identity restore — exact token
+    return `⟦${slots.length - 1}⟧`
+  })
+}
+
+/**
+ * One text through the full protection pipeline: hashtags first, then
+ * glossary terms. Both share the same slot array, so `restoreText` stitches
+ * everything back in a single pass.
+ */
+function protectOne(text: string, terms: ResolvedTerm[], slots: Slot[]): string {
+  return protectText(protectHashtags(text, slots), terms, slots)
+}
+
+/**
+ * Protect a whole batch (used identically by the LLM and LibreTranslate
+ * lanes). Returns the protected texts plus the per-text slot lists for the
+ * restore pass.
+ */
+function protectBatch(
+  texts: string[],
+  glossary: ResolvedTerm[],
+): { protectedTexts: string[]; slotsPerText: Slot[][] } {
+  const slotsPerText: Slot[][] = []
+  const protectedTexts = texts.map((t) => {
+    const slots: Slot[] = []
+    const protectedText = protectOne(t, glossary, slots)
+    slotsPerText.push(slots)
+    return protectedText
+  })
+  return { protectedTexts, slotsPerText }
 }
 
 /**
@@ -453,7 +514,7 @@ function systemPrompt(locale: string): string {
     'Hard rules:',
     `1. Translate idiomatically for a native ${name} reader from the crypto/Web3 industry — natural phrasing, never word-for-word.`,
     '2. Web3 terminology must stay accurate and industry-standard: DeFi, on-chain, TVL, AMM, DEX, CEX, DAO, NFT, Layer 2, L1/L2, stablecoin, airdrop, yield farming, staking, restaking, rollup, zkEVM, smart contract, wallet, gas fees, testnet, mainnet. Use the term the ' + name + ' crypto community actually uses; when no established translation exists, keep the English term as-is.',
-    '3. Never translate or alter: URLs, e-mail addresses, @usernames, $TICKER symbols, code snippets, and placeholders of the form ⟦0⟧, ⟦1⟧, ⟦2⟧ … Copy every placeholder EXACTLY as given — same brackets, same digits, same position.',
+    '3. Never translate or alter: URLs, e-mail addresses, @usernames, $TICKER symbols, hashtags (words starting with #, e.g. #crypto, #defi, #rust), code snippets, and placeholders of the form ⟦0⟧, ⟦1⟧, ⟦2⟧ … Copy every placeholder EXACTLY as given — same brackets, same digits, same position. Hashtags are search keywords: keep them in English exactly as written, never localize or transliterate them.',
     '4. Preserve the tone (professional but human) and the Markdown structure of each text: headings, bullet lists, bold, links, line breaks.',
     '5. You receive a JSON object {"texts": [...]} and must answer with ONLY a JSON object {"translations": [...]} with exactly the same number of items, in the same order. No explanations, no markdown fences.',
   ].join('\n')
@@ -638,13 +699,9 @@ async function translateViaLlm(
   glossary: ResolvedTerm[],
 ): Promise<string[] | null> {
   try {
-    const slotsPerText: Slot[][] = []
-    const protectedTexts = texts.map((t) => {
-      const slots: Slot[] = []
-      const protectedText = protectText(t, glossary, slots)
-      slotsPerText.push(slots)
-      return protectedText
-    })
+    // Hashtag + glossary protection: hashtags first (functional identifiers
+    // come back byte-identically), then jargon terms — one shared slot list.
+    const { protectedTexts, slotsPerText } = protectBatch(texts, glossary)
     const results = await llmTranslateTexts(provider, protectedTexts, locale, target)
     const restored: string[] = []
     for (let i = 0; i < results.length; i++) {
@@ -708,19 +765,11 @@ export async function translateBatch(texts: string[], locale: string): Promise<s
       return null
     }
 
-    // Glossary protection: swap jargon terms for opaque placeholders before
-    // anything leaves the process, so LibreTranslate cannot translate them.
+    // Protection: hashtags first (functional identifiers), then glossary
+    // jargon — anything protected leaves the process as opaque ⟦N⟧ tokens
+    // that neither an LLM nor LibreTranslate can touch.
     const glossary = await resolvedTermsForLocale(locale, target)
-    const slotsPerText: Slot[][] = []
-    const protectedTexts =
-      glossary.length > 0
-        ? texts.map((t) => {
-            const slots: Slot[] = []
-            const protectedText = protectText(t, glossary, slots)
-            slotsPerText.push(slots)
-            return protectedText
-          })
-        : texts
+    const { protectedTexts, slotsPerText } = protectBatch(texts, glossary)
 
     const batches = chunk(
       protectedTexts,
@@ -733,7 +782,8 @@ export async function translateBatch(texts: string[], locale: string): Promise<s
       results.push(...(await translateChunk(batch, target)))
     }
 
-    if (slotsPerText.length === 0) return results
+    // Restore hashtags + glossary terms. An empty slot list passes the text
+    // through untouched (nothing was protected for that string).
     const restored: string[] = []
     for (let i = 0; i < results.length; i++) {
       const fixed = restoreText(results[i], slotsPerText[i] ?? [], target)
