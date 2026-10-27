@@ -1,10 +1,18 @@
 # ---------------------------------------------------------------------------
 # Merklane — production stack
-#   app    : Next.js (standalone) on :3000, migrations on boot
-#   worker : background bot process (job-feed ingestion + premium dispatch)
-#   db     : PostgreSQL 16 with a persistent volume and healthcheck
+#   app           : Next.js (standalone) on 127.0.0.1:3000, migrations on boot
+#   worker        : background bot process (job-feed ingestion + premium dispatch)
+#   db            : PostgreSQL 16 with a persistent volume and healthcheck
+#   libretranslate: self-hosted machine translation of job content
 #
 #   cp .env.example .env  → fill values → docker compose up -d --build
+#
+# PORT BINDING: the app publishes to 127.0.0.1:3000 ONLY — the reverse proxy
+# (Caddy, see deploy/Caddyfile + DEPLOYMENT.md) terminates TLS on 443 and
+# proxies to the loopback port. Docker writes its own iptables rules and does
+# NOT go through UFW, so binding to the loopback interface (not 0.0.0.0) is
+# the reliable way to keep the app off the public internet. If you need direct
+# access without a proxy, change to "3000:3000".
 # ---------------------------------------------------------------------------
 
 name: merklane
@@ -34,7 +42,14 @@ services:
       - 1.1.1.1
       - 8.8.8.8
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
+    volumes:
+      # Custom translation glossary (Web3 jargon protection). The app reads
+      # it live — edit config/translation-glossary.json on the host and the
+      # change applies within 60 s, no container restart. Template:
+      # config/translation-glossary.example.json. Delete this mount if you
+      # are happy with the built-in default glossary.
+      - ./config/translation-glossary.json:/app/config/translation-glossary.json:ro
     environment:
       # Overridden from .env so container networking always resolves.
       DATABASE_URL: postgresql://merklane:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/merklane?schema=public
@@ -50,10 +65,20 @@ services:
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
       SEED_ON_BOOT: ${SEED_ON_BOOT:-false}
       # Bots (webhook routes live in the app process)
+      # Notifier bot: premium alert DMs + account linking (worker sends with it)
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:-}
       TELEGRAM_ADMIN_USER_IDS: ${TELEGRAM_ADMIN_USER_IDS:-}
       TELEGRAM_BOT_USERNAME: ${TELEGRAM_BOT_USERNAME:-}
+      # Admin intake bot: job composer wizard (separate @BotFather bot)
+      TELEGRAM_ADMIN_BOT_TOKEN: ${TELEGRAM_ADMIN_BOT_TOKEN:-}
+      TELEGRAM_ADMIN_WEBHOOK_SECRET: ${TELEGRAM_ADMIN_WEBHOOK_SECRET:-}
+      # Machine translation of job content (self-hosted LibreTranslate)
+      LIBRETRANSLATE_URL: ${LIBRETRANSLATE_URL:-http://libretranslate:5000}
+      LIBRETRANSLATE_API_KEY: ${LIBRETRANSLATE_API_KEY:-}
+      # Web3 glossary file location inside the container (see the volumes
+      # block below — normally you never change this).
+      TRANSLATION_GLOSSARY_PATH: ${TRANSLATION_GLOSSARY_PATH:-/app/config/translation-glossary.json}
       DISCORD_APPLICATION_ID: ${DISCORD_APPLICATION_ID:-}
       DISCORD_BOT_PUBLIC_KEY: ${DISCORD_BOT_PUBLIC_KEY:-}
       DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:-}
@@ -69,6 +94,12 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      # Translation is best-effort: the app serves the English original when
+      # LibreTranslate is still booting (it loads Argos models for ~1-2 min) —
+      # hence service_started, not service_healthy (a slow translator must
+      # never block the site from booting).
+      libretranslate:
+        condition: service_started
     networks:
       - merklane-net
     healthcheck:
@@ -131,6 +162,41 @@ services:
       start_period: 45s
       retries: 3
 
+  # -------------------------------------------------------------------------
+  # Self-hosted machine translation (free, no third-party calls). The app
+  # translates job titles/bodies on localized pages (DB-cached per language
+  # in Post.translations). Internal service — NOT published to the internet.
+  #
+  # Memory: ~1.5-2.5 GB with the bundled Argos models on a 2 GB VPS this fits;
+  # trim with LT_LOAD_ONLY (e.g. "en,ru,es,pt,uk,de,fr,tr,zh,ar") when RAM is
+  # tight. First start downloads nothing (models ship in the image) but takes
+  # 1-2 minutes to load them.
+  # -------------------------------------------------------------------------
+  libretranslate:
+    image: libretranslate/libretranslate:latest
+    container_name: merklane-libretranslate
+    restart: unless-stopped
+    environment:
+      # Restrict loaded language pairs (memory). Comment out to load every
+      # bundled model. en is the source; listed codes are targets.
+      LT_LOAD_ONLY: ${LIBRETRANSLATE_LOAD_ONLY:-en,ru,uk,es,pt,fr,de,tr,zh,ar,hi,id,vi,ko,ja,it,pl,sv}
+      # API key OFF by default: the service is unreachable from outside the
+      # compose network, so only app/worker can talk to it. Set
+      # LIBRETRANSLATE_API_KEY in .env and enable the line below if you ever
+      # expose it (e.g. through Caddy on a subdomain).
+      # LT_API_KEYS_DB_PATH: /app/db/api_keys.db
+      LT_DISABLE_WEB_UI: "1"
+    volumes:
+      - libretranslate-data:/app/db
+    networks:
+      - merklane-net
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:5000/languages', timeout=5)\" || exit 1"]
+      interval: 30s
+      timeout: 10s
+      start_period: 180s
+      retries: 5
+
   db:
     image: postgres:16-alpine
     container_name: merklane-db
@@ -159,6 +225,7 @@ services:
 
 volumes:
   merklane-pgdata:
+  libretranslate-data:
 
 networks:
   merklane-net:

@@ -5,6 +5,8 @@ import { clientIp, rateLimit } from '@/lib/rate-limit'
 import { handleRouteError, jsonCreated, jsonError, jsonOk, jsonRateLimited, forbidden } from '@/lib/api'
 import { createPostSchema, parseJsonBody, postListQuerySchema } from '@/lib/validation'
 import { listPosts, serializePost, uniqueSlug } from '@/lib/posts'
+import { localizePostList } from '@/lib/localize'
+import { LOCALES } from '@/i18n/routing'
 import { slugify } from '@/lib/utils'
 import { SECTION_META } from '@/lib/constants'
 
@@ -41,7 +43,15 @@ export async function GET(req: Request) {
     }
 
     const result = await listPosts(query)
-    return jsonOk({ ...result, posts: result.posts.map(serializePost) })
+    // Optional content localization for programmatic/API consumers:
+    //   GET /api/posts?section=mid-senior&locale=ru
+    // Localized pages do NOT rely on this (server components localize
+    // internally); the param exists so API clients get the same translated
+    // titles the UI shows.
+    const requestedLocale = url.searchParams.get('locale') ?? 'en'
+    const locale = (LOCALES as readonly string[]).includes(requestedLocale) ? requestedLocale : 'en'
+    const posts = locale === 'en' ? result.posts : await localizePostList(result.posts, locale)
+    return jsonOk({ ...result, posts: posts.map(serializePost) })
   } catch (err) {
     return handleRouteError(err)
   }

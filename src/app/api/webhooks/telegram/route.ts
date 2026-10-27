@@ -4,56 +4,39 @@ import { rateLimit } from '@/lib/rate-limit'
 import { sha256 } from '@/lib/csrf'
 import { botEnv, telegramAdminIds, telegramWebhookConfigured } from '@/lib/bots/config'
 import { parseTelegramCommand, telegramSendMessage, type TelegramUpdate } from '@/lib/bots/telegram'
-import {
-  createJobFromSpec,
-  grantPremium,
-  intakeStats,
-  listRecentJobs,
-  parseAddJobArgs,
-  publishPostById,
-  revokePremium,
-} from '@/lib/bots/intake'
 
 /**
- * POST /api/webhooks/telegram — Telegram Bot API webhook.
+ * POST /api/webhooks/telegram — the user-facing NOTIFIER BOT webhook.
  *
- * This is the admin-facing Job Ingestion Bot:
- *   /addjob  Title | Company | URL | Section | tags [key=value…]
- *   /jobs    [n]            — recent drafts + published postings
- *   /publish <id>           — publish a draft (fires premium dispatch)
- *   /stats                  — pipeline counters
- *   /grant <email> <days>   — activate premium for a user
- *   /revoke <email>         — deactivate premium
- *   /start <token>          — link a web account for premium DMs
- *   /alerts on|off · /unlink · /whoami · /help
+ * Role after the bot split (see /api/webhooks/telegram-admin):
+ *   THIS bot (TELEGRAM_BOT_TOKEN)                     admin intake bot
+ *   ─ /start <token> — link a web account             (TELEGRAM_ADMIN_BOT_TOKEN)
+ *   ─ /alerts on|off — pause/resume DMs               ─ job composer wizard
+ *   ─ /unlink · /whoami · /help                       ─ /jobs /publish /stats
+ *   ─ premium alert DMs (sent by the worker)          ─ /grant /revoke
  *
  * Security model (server-to-server — CSRF is not applicable):
  *   • every request must carry the X-Telegram-Bot-Api-Secret-Token header set
  *     via setWebhook (compared against TELEGRAM_WEBHOOK_SECRET)
- *   • write commands are restricted to TELEGRAM_ADMIN_USER_IDS
- *   • per-chat sliding-window rate limit; all inputs Zod-validated in intake.ts
- *   • every admin action is written to IngestionLog
+ *   • per-chat sliding-window rate limit
+ *   • every link/unlink lands in IngestionLog
  *
  * Always answers 200 to Telegram (error text is sent as the bot reply) so the
  * Bot API does not retry user mistakes.
  */
 
 const HELP_TEXT = [
-  '<b>Merklane admin bot</b>',
+  '<b>Merklane notifier bot</b>',
   '',
-  '<b>Job intake</b>',
-  '/addjob Title | Company | Apply URL | Section | tags,comma',
-  '  extras on following lines: kind= location= workplace= employment=',
-  '  level= salary= stack= body= publish=yes',
-  '/jobs [n] — recent postings · /publish &lt;id&gt; — publish a draft',
-  '',
-  '<b>Premium</b>',
-  '/grant email 30 — add 30 premium days · /revoke email',
+  'I send premium job alerts to this chat.',
   '',
   '<b>Your alerts</b>',
-  '/start — link your account · /alerts on|off · /unlink · /whoami',
+  '/start — link your account (code from the alerts page)',
+  '/alerts on|off — pause or resume DMs',
+  '/unlink — disconnect this chat',
+  '/whoami — show the linked account',
   '',
-  'Sections: intern-junior, mid-senior, opportunities, markets, insights, blog',
+  'Job publishing happens in the separate admin intake bot.',
 ].join('\n')
 
 export async function POST(req: Request) {
@@ -74,23 +57,30 @@ export async function POST(req: Request) {
     return jsonError('Invalid JSON body', 400)
   }
   if (!update?.message?.chat || !update.message.text) {
-    return jsonOk({ ignored: true }) // channel posts, edits, etc.
+    return jsonOk({ ignored: true }) // channel posts, edits, callback queries, etc.
   }
 
   const msg = update.message
   const chatId = String(msg.chat.id)
-  const fromId = String(msg.from?.id ?? '')
 
   const rl = rateLimit(`tg-webhook:${chatId}`, 20, 60_000)
   if (!rl.ok) return jsonOk({ ignored: true, reason: 'rate_limited' })
 
   const parsedCommand = parseTelegramCommand(msg.text)
   if (!parsedCommand) {
-    await reply(chatId, 'Commands start with <b>/</b>. Send /help for the manual.')
+    await reply(chatId, 'Commands start with <b>/</b>. Send /help for what I can do.')
     return jsonOk({ handled: true })
   }
   const { command, args } = parsedCommand
-  const isAdmin = telegramAdminIds().has(fromId)
+
+  // The notifier bot is user-facing: nothing here is admin-gated. The admin
+  // surface lives in the SEPARATE admin intake bot (TELEGRAM_ADMIN_BOT_TOKEN,
+  // webhook /api/webhooks/telegram-admin, allowlist TELEGRAM_ADMIN_USER_IDS).
+  // If a legacy admin sends /addjob here, point them at the new bot.
+  if (['addjob', 'jobs', 'publish', 'stats', 'grant', 'revoke'].includes(command)) {
+    await reply(chatId, 'That command moved to the admin intake bot (a separate Telegram bot). Talk to it there.')
+    return jsonOk({ handled: true })
+  }
 
   try {
     switch (command) {
@@ -168,110 +158,16 @@ export async function POST(req: Request) {
         break
       }
 
-      // ---- admin commands --------------------------------------------------
-      case 'addjob': {
-        if (!requireAdmin(chatId, isAdmin)) break
-        const parsed = parseAddJobArgs(args)
-        if (!parsed.ok) {
-          await reply(chatId, `⚠️ ${parsed.message}`)
-          break
-        }
-        const result = await createJobFromSpec(parsed.spec, { source: 'telegram', actor: `tg:${fromId}` })
-        if (!result.ok) {
-          await reply(chatId, `⚠️ ${result.message}`)
-          break
-        }
-        await reply(
-          chatId,
-          result.post.deduped
-            ? `♻️ Already in the database:\n${result.post.title}\nid: ${result.post.id} (${result.post.status})`
-            : `✅ ${result.post.status === 'published' ? 'Published' : 'Draft created'}:\n${result.post.title}\n` +
-                `id: ${result.post.id} · section: ${result.post.section}` +
-                (result.post.status === 'draft' ? `\nPublish with: /publish ${result.post.id}` : '\nPremium alerts are being dispatched.'),
-        )
-        break
-      }
-
-      case 'jobs': {
-        if (!requireAdmin(chatId, isAdmin)) break
-        const limit = Number(args.split(/\s+/)[0] ?? 5)
-        const jobs = await listRecentJobs(Number.isFinite(limit) ? limit : 5)
-        if (jobs.length === 0) {
-          await reply(chatId, 'No postings yet. Add the first with /addjob.')
-        } else {
-          await reply(
-            chatId,
-            jobs
-              .map((j) => `[${j.status === 'draft' ? '📝' : '🟢'}] ${j.id.slice(-6)} · ${j.title} — ${j.company ?? '?'} (${j.section})`)
-              .join('\n'),
-          )
-        }
-        break
-      }
-
-      case 'publish': {
-        if (!requireAdmin(chatId, isAdmin)) break
-        const id = args.trim()
-        if (!id) {
-          await reply(chatId, 'Usage: /publish <job id> (see /jobs)')
-          break
-        }
-        const res = await publishPostById(id)
-        await reply(chatId, res.ok ? `✅ ${res.message}` : `⚠️ ${res.message}`)
-        break
-      }
-
-      case 'stats': {
-        if (!requireAdmin(chatId, isAdmin)) break
-        const s = await intakeStats()
-        await reply(
-          chatId,
-          [
-            '<b>Pipeline</b>',
-            `Published: ${s.published} · Drafts: ${s.drafts}`,
-            `Waitlist: ${s.waitlist}`,
-            `Active premium: ${s.premium}`,
-            `Alerts pending: ${s.pendingAlerts} · failed: ${s.failedAlerts}`,
-          ].join('\n'),
-        )
-        break
-      }
-
-      case 'grant': {
-        if (!requireAdmin(chatId, isAdmin)) break
-        const [email, daysRaw] = args.split(/\s+/)
-        const days = Number(daysRaw)
-        if (!email || !Number.isFinite(days) || days < 1 || days > 3650) {
-          await reply(chatId, 'Usage: /grant user@email.com 30')
-          break
-        }
-        const res = await grantPremium(email, Math.floor(days))
-        await reply(chatId, res.ok ? `✅ ${res.message}` : `⚠️ ${res.message}`)
-        break
-      }
-
-      case 'revoke': {
-        if (!requireAdmin(chatId, isAdmin)) break
-        const email = args.trim()
-        if (!email) {
-          await reply(chatId, 'Usage: /revoke user@email.com')
-          break
-        }
-        const res = await revokePremium(email)
-        await reply(chatId, res.ok ? `✅ ${res.message}` : `⚠️ ${res.message}`)
-        break
-      }
-
       default: {
-        await reply(chatId, 'Unknown command. /help shows the manual.')
+        await reply(chatId, 'Unknown command. /help shows what I can do.')
         await db.ingestionLog.create({
-          data: { source: 'telegram', action: `unknown-command:${command}`, ok: false, actor: `tg:${fromId}` },
+          data: { source: 'telegram', action: `unknown-command:${command}`, ok: false, actor: `tg:${msg.from?.id ?? ''}` },
         })
       }
     }
   } catch (err) {
     console.error('[telegram-webhook] handler error:', err)
-    // Still 200 — Telegram must not hammer retries; the admin saw an error reply.
+    // Still 200 — Telegram must not hammer retries; the user saw an error reply.
     await reply(chatId, '⚠️ Something went wrong processing that command. Check the server logs.').catch(() => undefined)
   }
 
@@ -290,13 +186,4 @@ export async function GET() {
 
 async function reply(chatId: string, html: string) {
   await telegramSendMessage(chatId, html)
-}
-
-function requireAdmin(chatId: string, isAdmin: boolean): boolean {
-  if (isAdmin) return true
-  void reply(chatId, '⛔ Admin commands require your Telegram id to be listed in TELEGRAM_ADMIN_USER_IDS.').catch(() => undefined)
-  void db.ingestionLog
-    .create({ data: { source: 'telegram', action: 'admin-command-denied', ok: false, actor: chatId } })
-    .catch(() => undefined)
-  return false
 }

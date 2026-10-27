@@ -143,6 +143,9 @@ model Post {
   sourceRef    String?
   /// Set once premium notifications have been dispatched for this post
   notifiedAt   DateTime?
+  /// Machine-translation cache (LibreTranslate): { ru: { title, body }, es: { … } }.
+  /// Filled lazily on localized pages — never blocks rendering (English fallback).
+  translations Json?
   publishedAt  DateTime?
   views        Int       @default(0)
   likeCount    Int       @default(0)
@@ -264,6 +267,21 @@ model TelegramLink {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
+}
+
+/// Admin intake bot state machine — one wizard draft per admin Telegram user,
+/// driving the step-by-step job composer (inline buttons) behind
+/// /api/webhooks/telegram-admin (TELEGRAM_ADMIN_BOT_TOKEN).
+model TelegramAdminState {
+  id          String   @id @default(cuid())
+  /// Telegram user id (must be listed in TELEGRAM_ADMIN_USER_IDS)
+  adminUserId String   @unique
+  /// Current wizard step: section|title|company|location|workplace|employment|level|salary|stack|applyUrl|body|tags|confirm
+  step        String
+  /// Job fields collected so far (JobIntakeSpec-compatible JSON)
+  draft       Json
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 }
 
 /// Personal Discord webhook for premium job alerts (user pastes a webhook URL

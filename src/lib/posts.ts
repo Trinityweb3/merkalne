@@ -104,6 +104,7 @@ export const publicPostSelect = {
   tags: true,
   status: true,
   sourceLocale: true,
+  translations: true,
   publishedAt: true,
   views: true,
   likeCount: true,
@@ -165,8 +166,11 @@ export async function relatedPosts(post: { id: string; section: string }, take =
 }
 
 export function serializePost(post: PublicPost) {
+  // `translations` (the machine-translation cache) is internal — it is never
+  // shipped to the client; localized serving happens in server components.
+  const { translations: _translations, ...rest } = post
   return {
-    ...post,
+    ...rest,
     tags: parseTags(post.tags),
     authorName: post.author?.name ?? null,
   }

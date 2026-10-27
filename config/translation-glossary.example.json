@@ -1,0 +1,49 @@
+{
+  "_comment": "Merklane custom translation glossary — ANNOTATED TEMPLATE. Copy to config/translation-glossary.json (same directory) and edit freely; the app re-reads the active file every 60 s, no restart needed. A built-in Web3 glossary (DeFi, TVL, AMM, DAO, NFT, On-chain, Layer 2, Yield farming, …) is ALWAYS active underneath — this file is merged over it, term by term, so you only add overrides. Value formats: (1) a plain string = the same replacement in EVERY language; an identity value like \"On-chain\": \"On-chain\" simply protects the term from being translated; (2) an object = per-language replacements, where \"*\" is the fallback for every language you did not list; (3) an empty string for one language = do NOT protect it there, let LibreTranslate translate it naturally. Identity-mapped terms keep the casing found in the text ('on-chain' stays 'on-chain', 'On-chain' stays 'On-chain').",
+
+  "On-chain": "On-chain",
+  "Off-chain": "Off-chain",
+  "DeFi": "DeFi",
+  "TVL": "TVL",
+  "AMM": "AMM",
+  "DEX": "DEX",
+  "DAO": "DAO",
+  "NFT": "NFT",
+  "Web3": "Web3",
+
+  "Yield farming": {
+    "ru": "Фарминг доходности",
+    "es": "Agricultura de rendimientos",
+    "de": "Yield Farming",
+    "zh": "收益耕作",
+    "*": "Yield farming"
+  },
+
+  "Airdrop": {
+    "ru": "Аирдроп",
+    "es": "Airdrop",
+    "zh": "空投",
+    "*": "Airdrop"
+  },
+
+  "Stablecoin": {
+    "ru": "Стейблкоин",
+    "es": "Stablecoin",
+    "zh": "稳定币",
+    "*": "Stablecoin"
+  },
+
+  "Liquidity pool": {
+    "ru": "Пул ликвидности",
+    "es": "Pool de liquidez",
+    "zh": "流动性池",
+    "*": "Liquidity pool"
+  },
+
+  "_tip": "Set a value to \"\" for one language to let LibreTranslate translate a BUILT-IN term naturally there — 'Smart contract' below translates normally in Spanish but stays English everywhere else:",
+
+  "Smart contract": {
+    "es": "",
+    "*": "Smart contract"
+  }
+}

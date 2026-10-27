@@ -91,6 +91,32 @@ assert_file_contains "${ROOT}/docker-compose.yml" '1.1.1.1' \
 assert_file_contains "${ROOT}/Dockerfile" \
   'RUN sh docker/check-app-tree.sh' \
   "Dockerfile: stale-merge guard wired into the builder stage"
+# --- Telegram dual-bot architecture (guards the missing-token regression) ---
+assert_file_contains "${ROOT}/.env.example" 'TELEGRAM_ADMIN_BOT_TOKEN=""' \
+  ".env.example: TELEGRAM_ADMIN_BOT_TOKEN documented"
+assert_file_contains "${ROOT}/.env.example" 'TELEGRAM_ADMIN_WEBHOOK_SECRET=""' \
+  ".env.example: TELEGRAM_ADMIN_WEBHOOK_SECRET documented"
+assert_file_contains "${ROOT}/docker-compose.yml" 'TELEGRAM_ADMIN_BOT_TOKEN: ${TELEGRAM_ADMIN_BOT_TOKEN:-}' \
+  "docker-compose: admin bot token passed to the app service"
+[ -f "${ROOT}/src/app/api/webhooks/telegram-admin/route.ts" ] && echo "  [ok]   admin intake webhook route present (src/app/api/webhooks/telegram-admin/route.ts)" \
+  || { echo "  [FAIL] src/app/api/webhooks/telegram-admin/route.ts missing"; fail=1; }
+assert_file_contains "${ROOT}/scripts/set-telegram-webhook.ts" 'TELEGRAM_ADMIN_BOT_TOKEN' \
+  "set-telegram-webhook.ts: registers BOTH bots (admin intake included)"
+assert_file_contains "${ROOT}/src/app/api/webhooks/telegram-admin/route.ts" 'TELEGRAM_ADMIN_BOT_TOKEN' \
+  "admin webhook route uses the ADMIN bot token (not the notifier token)"
+# --- Translation glossary (Web3 jargon protection) ---------------------------
+[ -f "${ROOT}/src/lib/translation-glossary.ts" ] && echo "  [ok]   translation glossary module present" \
+  || { echo "  [FAIL] src/lib/translation-glossary.ts missing"; fail=1; }
+[ -f "${ROOT}/config/translation-glossary.json" ] && echo "  [ok]   active glossary config present" \
+  || { echo "  [FAIL] config/translation-glossary.json missing"; fail=1; }
+[ -f "${ROOT}/config/translation-glossary.example.json" ] && echo "  [ok]   annotated glossary template present" \
+  || { echo "  [FAIL] config/translation-glossary.example.json missing"; fail=1; }
+assert_file_contains "${ROOT}/src/lib/translate.ts" 'protectText' \
+  "translate.ts: glossary protect/restore pipeline wired in"
+assert_file_contains "${ROOT}/.env.example" 'TRANSLATION_GLOSSARY_PATH' \
+  ".env.example: glossary path variable documented"
+assert_file_contains "${ROOT}/docker-compose.yml" 'TRANSLATION_GLOSSARY_PATH' \
+  "docker-compose: glossary path passed to the app service"
 # Run the same stale-merge guard the Docker build runs — the sandbox tree
 # itself must be clean before it is bundled.
 if sh "${ROOT}/docker/check-app-tree.sh" >/dev/null 2>&1; then
@@ -178,6 +204,54 @@ if tar -tzf "${OUT}/${ARCHIVE_NAME}" | grep -q '^merklane/merklane/'; then
   exit 1
 fi
 echo "  [ok]   single top-level merklane/ — extracts flat into the target"
+
+# ---------------------------------------------------------------------------
+# IN-ARCHIVE verification — the checks above ran against the WORKING TREE;
+# these run against the ARCHIVE ITSELF. A stale or half-built tarball can
+# never pass this section, no matter what the build logs claimed.
+# ---------------------------------------------------------------------------
+echo "[export] verifying the ARCHIVE itself (deep check — no stale bundles)…"
+VERIFY_DIR="$(mktemp -d)"
+tar -xzf "${OUT}/${ARCHIVE_NAME}" -C "${VERIFY_DIR}"
+archive_fail=0
+assert_file_contains "${VERIFY_DIR}/merklane/.env.example" 'TELEGRAM_ADMIN_BOT_TOKEN=""' \
+  "archive: .env.example ships TELEGRAM_ADMIN_BOT_TOKEN"
+assert_file_contains "${VERIFY_DIR}/merklane/.env.example" 'TRANSLATION_GLOSSARY_PATH' \
+  "archive: .env.example ships the glossary variable"
+[ -f "${VERIFY_DIR}/merklane/src/app/api/webhooks/telegram-admin/route.ts" ] && echo "  [ok]   archive: telegram-admin/route.ts present" \
+  || { echo "  [FAIL] archive: src/app/api/webhooks/telegram-admin/route.ts MISSING"; archive_fail=1; }
+[ -f "${VERIFY_DIR}/merklane/scripts/set-telegram-webhook.ts" ] && echo "  [ok]   archive: set-telegram-webhook.ts present" \
+  || { echo "  [FAIL] archive: scripts/set-telegram-webhook.ts MISSING"; archive_fail=1; }
+assert_file_contains "${VERIFY_DIR}/merklane/scripts/set-telegram-webhook.ts" 'TELEGRAM_ADMIN_BOT_TOKEN' \
+  "archive: webhook script registers BOTH bots"
+[ -f "${VERIFY_DIR}/merklane/src/lib/translation-glossary.ts" ] && echo "  [ok]   archive: translation-glossary.ts present" \
+  || { echo "  [FAIL] archive: src/lib/translation-glossary.ts MISSING"; archive_fail=1; }
+assert_file_contains "${VERIFY_DIR}/merklane/src/lib/translate.ts" 'protectText' \
+  "archive: translate.ts carries the glossary pipeline"
+[ -f "${VERIFY_DIR}/merklane/config/translation-glossary.json" ] && echo "  [ok]   archive: active glossary config present" \
+  || { echo "  [FAIL] archive: config/translation-glossary.json MISSING"; archive_fail=1; }
+[ -f "${VERIFY_DIR}/merklane/config/translation-glossary.example.json" ] && echo "  [ok]   archive: glossary template present" \
+  || { echo "  [FAIL] archive: config/translation-glossary.example.json MISSING"; archive_fail=1; }
+assert_file_contains "${VERIFY_DIR}/merklane/docker-compose.yml" 'TELEGRAM_ADMIN_BOT_TOKEN' \
+  "archive: docker-compose passes the admin bot token"
+assert_file_contains "${VERIFY_DIR}/merklane/Dockerfile" 'COPY --from=builder --chown=merklane:merklane /app/prisma ./prisma' \
+  "archive: Dockerfile prisma COPY intact"
+assert_file_contains "${VERIFY_DIR}/merklane/Dockerfile" 'COPY --from=builder --chown=merklane:merklane /app/node_modules ./node_modules' \
+  "archive: Dockerfile FULL node_modules COPY intact"
+# Cross-check: every file listed in the archive MANIFEST exists after extraction
+MANIFEST_COUNT="$(wc -l < "${VERIFY_DIR}/merklane/MANIFEST" | tr -d ' ')"
+MISSING_IN_ARCHIVE="$(cd "${VERIFY_DIR}/merklane" && while IFS= read -r f; do [ -f "${f}" ] || echo "${f}"; done < MANIFEST | head -5)"
+if [ -z "${MISSING_IN_ARCHIVE}" ]; then
+  echo "  [ok]   archive: all ${MANIFEST_COUNT} MANIFEST files present after extraction"
+else
+  echo "  [FAIL] archive: files listed in MANIFEST but missing: ${MISSING_IN_ARCHIVE}"
+  archive_fail=1
+fi
+rm -rf "${VERIFY_DIR}"
+if [ "${archive_fail}" != "0" ]; then
+  echo "[export] ABORTED — the archive itself failed verification (stale/partial bundle)." >&2
+  exit 1
+fi
 
 ( cd "${OUT}" && sha256sum "${ARCHIVE_NAME}" > "${ARCHIVE_NAME}.sha256" 2>/dev/null \
   || shasum -a 256 "${ARCHIVE_NAME}" > "${ARCHIVE_NAME}.sha256" )

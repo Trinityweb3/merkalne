@@ -65,8 +65,12 @@ const shortText = (max: number) => z.string().trim().max(max).optional()
 
 export const jobIntakeSchema = z.object({
   title: z.string().trim().min(4, 'Title is too short (min 4 chars)').max(160, 'Title is too long (max 160 chars)'),
-  company: z.string().trim().min(1, 'Company is required').max(120),
-  applyUrl: httpUrl,
+  // Company is optional — editorial posts (blog/insights/markets) have no
+  // employer; the wizard and /addjob may both leave it out.
+  company: z.string().trim().min(1, 'Company is too short').max(120).optional(),
+  // Apply URL is optional for the same reason (analysis posts have nowhere to
+  // "apply"); job listings should still provide one.
+  applyUrl: httpUrl.optional(),
   section: z.enum(POST_SECTIONS),
   tags: z.array(z.string().trim().min(1).max(40)).max(12).default([]),
   kind: shortText(40),
@@ -148,8 +152,8 @@ export function parseAddJobArgs(args: string): { ok: true; spec: JobIntakeSpec }
 
   const spec: JobIntakeSpec = {
     title,
-    company,
-    applyUrl,
+    company: company || undefined,
+    applyUrl: applyUrl || undefined,
     section,
     tags: tagsRaw.split(',').map((t) => t.trim()).filter(Boolean),
     kind: kv.kind,
@@ -212,21 +216,24 @@ export async function createJobFromSpec(
   const sourceRef = spec.sourceRef ?? spec.applyUrl
 
   // Dedupe: same source + same external reference must never create twice.
-  const existing = await db.post.findFirst({
-    where: { source: meta.source, sourceRef },
-    select: { id: true, slug: true, title: true, section: true, status: true },
-  })
-  if (existing) {
-    await db.ingestionLog.create({
-      data: {
-        source: meta.source,
-        action: 'job-duplicate-skipped',
-        ok: true,
-        detail: sourceRef.slice(0, 300),
-        actor: meta.actor,
-      },
+  // Human posts without any reference (no applyUrl) simply skip dedupe.
+  if (sourceRef) {
+    const existing = await db.post.findFirst({
+      where: { source: meta.source, sourceRef },
+      select: { id: true, slug: true, title: true, section: true, status: true },
     })
-    return { ok: true, post: { ...existing, deduped: true } }
+    if (existing) {
+      await db.ingestionLog.create({
+        data: {
+          source: meta.source,
+          action: 'job-duplicate-skipped',
+          ok: true,
+          detail: sourceRef.slice(0, 300),
+          actor: meta.actor,
+        },
+      })
+      return { ok: true, post: { ...existing, deduped: true } }
+    }
   }
 
   const body =
@@ -234,18 +241,17 @@ export async function createJobFromSpec(
     [
       `Imported via ${meta.source} on ${new Date().toISOString().slice(0, 10)}.`,
       '',
-      `**Company:** ${spec.company}`,
+      spec.company ? `**Company:** ${spec.company}` : null,
       spec.location ? `**Location:** ${spec.location}` : null,
       spec.salary ? `**Salary:** ${spec.salary}` : null,
       spec.stack ? `**Stack:** ${spec.stack}` : null,
-      '',
-      `Apply: ${spec.applyUrl}`,
+      spec.applyUrl ? `Apply: ${spec.applyUrl}` : null,
     ]
       .filter((l) => l !== null)
       .join('\n')
 
   const status = spec.publish ? 'published' : 'draft'
-  const slug = await uniqueSlug(`${spec.title}-${spec.company}`)
+  const slug = await uniqueSlug(spec.company ? `${spec.title}-${spec.company}` : spec.title)
 
   const post = await db.post.create({
     data: {
@@ -253,7 +259,7 @@ export async function createJobFromSpec(
       section: spec.section,
       kind: spec.kind ?? DEFAULT_KIND[spec.section],
       title: spec.title,
-      company: spec.company,
+      company: spec.company ?? null,
       location: spec.location ?? null,
       workplace: spec.workplace ?? null,
       employment: spec.employment ?? null,
@@ -261,12 +267,12 @@ export async function createJobFromSpec(
       salary: spec.salary ?? null,
       stack: spec.stack ?? null,
       body,
-      applyUrl: spec.applyUrl,
-      originalUrl: meta.source === 'worker-feed' ? sourceRef : null,
+      applyUrl: spec.applyUrl ?? null,
+      originalUrl: meta.source === 'worker-feed' ? (sourceRef ?? null) : null,
       tags: spec.tags.join(','),
       status,
       source: meta.source,
-      sourceRef,
+      sourceRef: sourceRef ?? null,
       publishedAt: status === 'published' ? new Date() : null,
     },
     select: { id: true, slug: true, title: true, section: true, status: true },

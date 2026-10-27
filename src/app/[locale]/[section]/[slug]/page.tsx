@@ -6,6 +6,7 @@ import { Briefcase, CodeXml, Compass, ExternalLink, MapPin, Wallet } from 'lucid
 import { db } from '@/lib/db'
 import { getSession } from '@/lib/auth'
 import { getPostBySlug, relatedPosts, serializePost } from '@/lib/posts'
+import { localizePostFull, localizePostList } from '@/lib/localize'
 import { SECTION_META, type PostSection } from '@/lib/constants'
 import { ArticleBody } from '@/components/site/article-body'
 import { PostActions } from '@/components/site/post-actions'
@@ -14,7 +15,7 @@ import { SupportBanner } from '@/components/site/support-banner'
 import { formatDateTime, timeAgo } from '@/lib/utils'
 
 interface PageProps {
-  params: Promise<{ section: string; slug: string }>
+  params: Promise<{ locale: string; section: string; slug: string }>
 }
 
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
@@ -31,19 +32,23 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
 }
 
 export default async function PostDetailPage({ params }: PageProps) {
-  const { section, slug } = await params
+  const { locale, section, slug } = await params
   const t = await getTranslations('common')
-  const post = await getPostBySlug(slug)
-  if (!post || post.section !== section) notFound()
+  const fetched = await getPostBySlug(slug)
+  if (!fetched || fetched.section !== section) notFound()
+  // Localized serving: DB cache → LibreTranslate (title + body) → English
+  // fallback. Never blocks the render beyond the client request timeout.
+  const post = await localizePostFull(fetched, locale)
 
   const serialized = serializePost(post)
   const meta = SECTION_META[post.section as PostSection]
 
-  const [related, session, commentCount] = await Promise.all([
+  const [relatedRaw, session, commentCount] = await Promise.all([
     relatedPosts(post, 3),
     getSession(),
     db.comment.count({ where: { postId: post.id } }),
   ])
+  const related = await localizePostList(relatedRaw, locale)
 
   const reaction = session
     ? await db.reaction.findUnique({

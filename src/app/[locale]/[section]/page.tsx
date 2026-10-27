@@ -3,6 +3,7 @@ import type { Metadata } from 'next'
 import { getTranslations } from 'next-intl/server'
 import { Link } from '@/i18n/navigation'
 import { listPosts, serializePost } from '@/lib/posts'
+import { localizePostList } from '@/lib/localize'
 import { POST_SECTIONS, SECTION_META, type PostSection } from '@/lib/constants'
 import { postListQuerySchema } from '@/lib/validation'
 import { SectionFilters, SECTION_FILTERS } from '@/components/site/section-filters'
@@ -11,7 +12,7 @@ import { SupportBanner } from '@/components/site/support-banner'
 import { SECTION_ICONS } from '@/components/site/section-head'
 
 interface PageProps {
-  params: Promise<{ section: string }>
+  params: Promise<{ locale: string; section: string }>
   searchParams: Promise<Record<string, string | string[] | undefined>>
 }
 
@@ -32,7 +33,7 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
 }
 
 export default async function SectionPage({ params, searchParams }: PageProps) {
-  const { section } = await params
+  const { locale, section } = await params
   if (!isSection(section)) notFound()
   const meta = SECTION_META[section]
   const Icon = SECTION_ICONS[section]
@@ -47,7 +48,10 @@ export default async function SectionPage({ params, searchParams }: PageProps) {
     ),
   })
   const list = await listPosts({ ...query, section })
-  const posts = list.posts.map(serializePost)
+  // Localized serving: DB cache → LibreTranslate (title-only granularity for
+  // lists) → English fallback. Best-effort by design.
+  const localized = await localizePostList(list.posts, locale)
+  const posts = localized.map(serializePost)
 
   return (
     <div className="container page">

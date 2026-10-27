@@ -247,6 +247,15 @@ still fail with `ConnectionRefused` from the containers while working from
 | 15 | `TELEGRAM_WEBHOOK_SECRET` | 48-char hex | Generate: `openssl rand -hex 24` — then register it once: `bun scripts/set-telegram-webhook.ts` (Telegram will echo it in the `X-Telegram-Bot-Api-Secret-Token` header on every call) | No. Without it the webhook rejects everything (this is the bot's authentication, CSRF does not apply to server-to-server calls) |
 | 16 | `TELEGRAM_ADMIN_USER_IDS` | `11111111,22222222` | In Telegram, message **@userinfobot** — it replies with your numeric id | No. Without it ALL admin commands (`/addjob /publish /grant…`) are denied for everyone — by design |
 | 17 | `TELEGRAM_BOT_USERNAME` | `merklane_jobs_bot` (no `@`) | @BotFather → `/mybots` → the bot's username | No. Without it: `/alerts` cannot generate t.me deep links (Telegram link flow disabled) |
+| 17a | `TELEGRAM_ADMIN_BOT_TOKEN` | `123456789:BBf7…` | @BotFather → `/newbot` **again** — a SECOND, separate bot (e.g. `merklane_intake_bot`) that runs the admin job-composer wizard (`/start` → ➕ Add job → inline buttons) | No. Without it the admin intake bot stays disabled (the webhook answers 503 "not configured") |
+| 17b | `TELEGRAM_ADMIN_WEBHOOK_SECRET` | different 48-char hex | Generate: `openssl rand -hex 24` — MUST differ from #15. Register both bots with the same script: `bun scripts/set-telegram-webhook.ts` (or one bot at a time with `--notifier` / `--admin`) | No. Without it the admin webhook rejects every update |
+
+> **Two bots, two roles.** The notifier bot (#14) only SENDS premium alert DMs and
+> handles `/start` linking codes. The admin intake bot (#17a) is the one humans
+> use to compose and publish jobs with inline buttons. Only Telegram user ids
+> listed in `TELEGRAM_ADMIN_USER_IDS` (#16) may talk to the admin bot — everyone
+> else gets rejected. They are deliberately separate @BotFather bots so a
+> leaked notifier token can never be used to publish jobs.
 
 ### Bots — Discord (slash-command ingestion)
 
@@ -281,6 +290,34 @@ still fail with `ConnectionRefused` from the containers while working from
 | 34 | `STATS_BACKFILL_DAYS` | `7` | Your choice (0–30) | No (default 7). Days of missed snapshots that get backfilled after worker downtime |
 
 > **What is measured (privacy):** one row per deduplicated page view — path, section, a 2-letter country code from proxy headers (`XX` = unknown behind plain Caddy/nginx; Cloudflare's `CF-IPCountry` works automatically) and an **irreversible keyed hash** of IP + browser. No raw IP, no user agent, no user id, no cookies. Do-Not-Track requests are skipped entirely. The numbers appear once a day on `/about`; an admin can force a refresh via `POST /api/admin/stats`. Team cards, monthly recap videos and the pitch-deck link are edited in one file: `src/lib/about-content.ts`.
+
+### Machine translation (self-hosted LibreTranslate + Web3 glossary)
+
+| # | Variable | Write this (example) | Where to get it | Required? |
+|---|----------|----------------------|-----------------|-----------|
+| 35 | `LIBRETRANSLATE_URL` | *(leave empty)* | docker-compose wires `http://libretranslate:5000` internally. Set `http://127.0.0.1:5000` only for non-Docker local runs | No (empty = translation off; localized pages serve the English original) |
+| 36 | `LIBRETRANSLATE_API_KEY` | *(leave empty)* | Only when you start LibreTranslate with `LT_REQ_API_KEY` | No |
+| 37 | `LIBRETRANSLATE_LOAD_ONLY` | *(default list)* | Argos language pairs the bundled LibreTranslate loads (RAM tuning on small VPS) | No |
+| 38 | `TRANSLATION_GLOSSARY_PATH` | *(leave empty)* | Points at the Web3 glossary JSON; the default `config/translation-glossary.json` is already volume-mounted by compose | No |
+
+> **Web3 glossary — how jargon survives translation.** LibreTranslate would
+> translate "On-chain" literally and sound robotic. The app swaps every
+> glossary term for an opaque placeholder before the request leaves the
+> process, and stitches your preferred term back in afterwards:
+>
+> - A **built-in** glossary is always active: On-chain, Off-chain, DeFi, TVL,
+>   AMM, DEX, CEX, DAO, NFT(s), EVM, zkEVM, Layer 1/2, Web3, Yield farming,
+>   Stablecoin(s), Airdrop(s), Gas fees, Restaking, …
+> - **Your file wins per term**: edit `config/translation-glossary.json`
+>   (template with comments: `config/translation-glossary.example.json`).
+>   Plain string = same in every language (`"On-chain": "On-chain"` just
+>   protects it); per-language object with `"*"` fallback = real replacement
+>   (`"Yield farming": { "ru": "Фарминг доходности", "*": "Yield farming" }`);
+>   `""` for one language = translate it naturally there.
+> - The file is re-read every 60 s — edit and reload a page, no restart.
+> - Already-cached translations keep the glossary as it was when they were
+>   made; to force a re-translate after big glossary edits:
+>   `docker compose exec db psql -U merklane -d merklane -c "UPDATE \"Post\" SET translations = '{}'"`
 
 ### The 30-second minimal setup
 

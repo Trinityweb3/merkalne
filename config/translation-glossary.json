@@ -1,0 +1,47 @@
+{
+  "_readme": "ACTIVE glossary — the app re-reads this file every 60 s (no restart needed). A built-in Web3 glossary (DeFi, TVL, AMM, DAO, NFT, On-chain, …) is ALWAYS active underneath; this file is merged over it term by term. Values: string = same replacement in every language (identity = keep English, protected from LibreTranslate); object = per-language with '*' as the fallback for every other language; empty string = translate that term naturally for that language. Identity-mapped terms keep the casing from the text ('on-chain' stays 'on-chain'). See translation-glossary.example.json for a fully annotated copy.",
+
+  "On-chain": "On-chain",
+  "Off-chain": "Off-chain",
+  "DeFi": "DeFi",
+  "TVL": "TVL",
+  "AMM": "AMM",
+  "DEX": "DEX",
+  "DAO": "DAO",
+  "NFT": "NFT",
+  "Web3": "Web3",
+
+  "Yield farming": {
+    "ru": "Фарминг доходности",
+    "es": "Agricultura de rendimientos",
+    "de": "Yield Farming",
+    "zh": "收益耕作",
+    "*": "Yield farming"
+  },
+
+  "Airdrop": {
+    "ru": "Аирдроп",
+    "es": "Airdrop",
+    "zh": "空投",
+    "*": "Airdrop"
+  },
+
+  "Stablecoin": {
+    "ru": "Стейблкоин",
+    "es": "Stablecoin",
+    "zh": "稳定币",
+    "*": "Stablecoin"
+  },
+
+  "Liquidity pool": {
+    "ru": "Пул ликвидности",
+    "es": "Pool de liquidez",
+    "zh": "流动性池",
+    "*": "Liquidity pool"
+  },
+
+  "Smart contract": {
+    "es": "",
+    "*": "Smart contract"
+  }
+}

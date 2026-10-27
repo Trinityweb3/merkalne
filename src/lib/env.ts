@@ -56,6 +56,21 @@ const envSchema = z.object({
   DONATION_SOL_ADDRESS: optionalAddress(32, 48),
   DONATION_BTC_ADDRESS: optionalAddress(26, 62),
   DONATION_USDT_EVM_ADDRESS: optionalAddress(42, 42),
+  // LibreTranslate (self-hosted machine translation of job content).
+  // Empty/absent = feature off: localized pages serve the English original.
+  LIBRETRANSLATE_URL: z.preprocess(
+    emptyToUndefined,
+    z
+      .string()
+      .trim()
+      .regex(/^https?:\/\/.+/, 'LIBRETRANSLATE_URL must be an http(s) URL, e.g. http://libretranslate:5000')
+      .transform((v) => v.replace(/\/+$/, ''))
+      .optional(),
+  ),
+  LIBRETRANSLATE_API_KEY: optionalStr,
+  // Custom translation glossary file (Web3 jargon protection). Empty = the
+  // conventional config/translation-glossary.json next to the app, if any.
+  TRANSLATION_GLOSSARY_PATH: optionalStr,
   CORS_ALLOWED_ORIGINS: z.preprocess(emptyToUndefined, z.string().default('')),
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
 })

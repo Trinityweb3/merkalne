@@ -13,6 +13,8 @@
 #     on the host network).
 #   - the db service is untouched: it stays isolated on merklane-net with
 #     its volume, healthcheck and the 127.0.0.1:${DB_HOST_PORT:-5433} mapping.
+#   - libretranslate stays on the bridge but PUBLISHES 127.0.0.1:5000 so the
+#     host-networked app can reach it at http://127.0.0.1:5000.
 #
 # Result: Resend (api.resend.com), OAuth (oauth2.googleapis.com, github.com)
 # and feed fetches leave through the host stack exactly like builds do —
@@ -36,10 +38,14 @@ services:
     ports: !reset []
     dns: !reset []
     networks: !reset []
+    # depends_on (db healthy + libretranslate started) still orders the boot —
+    # network_mode does not affect dependency ordering.
     environment:
       # Host-side address of the bundled PostgreSQL (its published mapping).
       DATABASE_URL: postgresql://merklane:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@127.0.0.1:${DB_HOST_PORT:-5433}/merklane?schema=public
-    # depends_on db (healthy) still orders the boot.
+      # Host-networked app cannot resolve the compose DNS name — use the
+      # loopback port libretranslate publishes below.
+      LIBRETRANSLATE_URL: http://127.0.0.1:5000
 
   worker:
     network_mode: host
@@ -47,3 +53,9 @@ services:
     networks: !reset []
     environment:
       DATABASE_URL: postgresql://merklane:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@127.0.0.1:${DB_HOST_PORT:-5433}/merklane?schema=public
+
+  # LibreTranslate: keep the bridge placement (it needs no external egress)
+  # but publish its port on the host loopback for the host-networked app.
+  libretranslate:
+    ports:
+      - "127.0.0.1:5000:5000"

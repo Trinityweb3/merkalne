@@ -1,5 +1,6 @@
 import { Link } from '@/i18n/navigation'
 import { latestBySection, serializePost } from '@/lib/posts'
+import { localizePostList } from '@/lib/localize'
 import { EDITORIAL_SECTIONS, SECTION_META } from '@/lib/constants'
 import { SearchBox } from '@/components/site/search-box'
 import { SectionHead } from '@/components/site/section-head'
@@ -17,10 +18,13 @@ const QUICK_LINKS = [
   { label: 'Added today', href: '/search?period=24h' },
 ]
 
-export default async function HomePage() {
+export default async function HomePage({ params }: { params: Promise<{ locale: string }> }) {
+  const { locale } = await params
   // Latest three published posts per working section (Blog included).
   const sections = [...EDITORIAL_SECTIONS, 'blog' as const]
-  const rails = await Promise.all(sections.map((section) => latestBySection(section, 3)))
+  const rawRails = await Promise.all(sections.map((section) => latestBySection(section, 3)))
+  // Localized titles for the rails (DB cache → LibreTranslate → English).
+  const rails = await Promise.all(rawRails.map((rail) => localizePostList(rail, locale)))
 
   return (
     <>

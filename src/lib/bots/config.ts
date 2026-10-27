@@ -26,7 +26,8 @@ const optionalStr = (min: number, refine?: { check: (v: string) => boolean; mess
   )
 
 const botEnvSchema = z.object({
-  // --- Telegram ingestion + alerts -----------------------------------------
+  // --- Telegram: user-facing notifier bot (premium alert DMs + account
+  //     linking). Webhook: /api/webhooks/telegram, driven by the worker. -----
   TELEGRAM_BOT_TOKEN: optionalStr(1),
   TELEGRAM_WEBHOOK_SECRET: optionalStr(16),
   TELEGRAM_ADMIN_USER_IDS: optionalStr(1),
@@ -34,6 +35,12 @@ const botEnvSchema = z.object({
     check: (v) => /^[A-Za-z0-9_]{4,32}$/.test(v),
     message: 'TELEGRAM_BOT_USERNAME must be the bare @BotFather name, e.g. merklane_admin_bot',
   }),
+  // --- Telegram: admin intake bot (job composer wizard + admin commands).
+  //     Separate token from a SECOND @BotFather bot; webhook:
+  //     /api/webhooks/telegram-admin. Uses the same TELEGRAM_ADMIN_USER_IDS
+  //     allowlist as the notifier's admin commands.
+  TELEGRAM_ADMIN_BOT_TOKEN: optionalStr(1),
+  TELEGRAM_ADMIN_WEBHOOK_SECRET: optionalStr(16),
 
   // --- Discord ingestion + alerts ------------------------------------------
   DISCORD_APPLICATION_ID: optionalStr(1),
@@ -114,6 +121,11 @@ export const botEnv = parsed.data
  */
 export function telegramWebhookConfigured(): boolean {
   return Boolean(botEnv.TELEGRAM_WEBHOOK_SECRET)
+}
+
+/** True when the admin intake bot (separate Telegram bot) can receive updates. */
+export function telegramAdminWebhookConfigured(): boolean {
+  return Boolean(botEnv.TELEGRAM_ADMIN_WEBHOOK_SECRET)
 }
 
 /** Telegram job ingestion + premium DM alerts are fully configured. */

@@ -107,29 +107,41 @@ Design rules applied throughout:
 ├── prisma/
 │   ├── schema.prisma           # PostgreSQL schema (source of truth)
 │   ├── schema.sqlite.prisma    # auto-generated local preview variant
-│   ├── migrations/             # 0001 init + 0002 bots/premium alerts
+│   ├── migrations/             # 0001 init · 0002 bots/premium · 0003 stats · 0004 translations + admin-bot state
 │   └── seed.ts                 # reference dataset + demo accounts
 ├── worker/
 │   └── worker.ts               # background process: feed ingestion + premium dispatch
 ├── scripts/
 │   ├── sync-sqlite-schema.ts   # generates the SQLite preview schema
-│   ├── set-telegram-webhook.ts # registers the Telegram webhook (+ secret token)
+│   ├── set-telegram-webhook.ts # registers BOTH Telegram webhooks (notifier + admin intake bots)
 │   ├── register-discord-commands.ts # registers /addjob /jobs /publish
-│   └── grant-premium.ts        # CLI premium grant/revoke (until billing launches)
+│   ├── grant-premium.ts        # CLI premium grant/revoke (until billing launches)
+│   ├── build-export.sh         # builds the portable export bundle (24+ pre-flight assertions)
+│   └── serve-prod.sh           # detached production-server launcher (QA)
+├── deploy/
+│   └── Caddyfile               # reverse-proxy config for merklane.com → 127.0.0.1:3000
+├── docker/
+│   ├── entrypoint.sh           # container boot: migrate → seed → serve
+│   ├── fix-container-network.sh# bridge-egress doctor (DNS/iptables repairs + probes)
+│   └── check-app-tree.sh       # stale-merge guard (wired into the Dockerfile)
+├── DEPLOYMENT.md               # VPS guide: Ubuntu prep, transfer, Caddy, UFW, updates
+├── docker-compose.yml          # app + worker + db + libretranslate
+├── docker-compose.egress.yml   # escape hatch: host networking when the bridge is broken
 ├── src/
 │   ├── proxy.ts                # CSRF cookie seeding, security headers, /profile + /alerts gate (Next 16 proxy)
 │   ├── app/
-│   │   ├── layout.tsx          # shell: header/footer/donation/cookies/toaster
-│   │   ├── page.tsx            # home
-│   │   ├── [section]/          # section listing + [slug] article pages
-│   │   ├── search/  ads/  premium/  alerts/  auth/  profile/
-│   │   ├── about/ contact/ terms/ privacy/ cookies/ risk/ recruiter/
-│   │   ├── robots.ts  sitemap.ts  not-found.tsx  error.tsx
+│   │   ├── [locale]/           # EVERY page lives here (20 locales, default en keeps prefix-free URLs)
+│   │   │   ├── layout.tsx      #   root layout: <html lang dir>, NextIntlClientProvider
+│   │   │   ├── page.tsx        #   home
+│   │   │   ├── [section]/      #   section listing + [slug] article pages
+│   │   │   └── search/ ads/ premium/ alerts/ auth/ profile/ about/ contact/ …
 │   │   └── api/                # all route handlers (see API reference)
-│   ├── components/
-│   │   ├── site/               # design-system components (cards, header, alerts-manager, …)
-│   │   ├── providers/          # client session provider
-│   │   └── ui/                 # shadcn/ui primitives
+│   ├── i18n/
+│   │   ├── routing.ts          # next-intl routing (as-needed prefixes)
+│   │   ├── navigation.ts       # locale-aware Link/useRouter
+│   │   ├── request.ts          # dictionary loader (en fallback)
+│   │   └── messages/           # 20 typed dictionaries
+│   ├── components/             # site/ design system + providers/ + ui/ (shadcn)
 │   └── lib/
 │       ├── env.ts              # strict Zod-validated environment
 │       ├── db.ts               # Prisma client singleton
@@ -139,12 +151,14 @@ Design rules applied throughout:
 │       ├── email.ts            # Resend + branded templates (account mail)
 │       ├── validation.ts       # all Zod schemas
 │       ├── posts.ts            # shared post queries
+│       ├── localize.ts         # DB translation cache (Post.translations) + serving layer
+│       ├── translate.ts        # LibreTranslate client (batched, timeouts, circuit breaker)
 │       ├── api.ts / api-client.ts  # server/client helpers
 │       ├── constants.ts        # sections, languages, filters
 │       ├── utils.ts
 │       └── bots/               # runtime-agnostic bot subsystem
-│           ├── config.ts       #   bot env vars + feature detection
-│           ├── telegram.ts     #   Bot API client + command parser
+│           ├── config.ts       #   bot env vars + feature detection (both TG bots)
+│           ├── telegram.ts     #   Bot API client (multi-token) + command parser
 │           ├── discord.ts      #   Ed25519 verification + webhook sender
 │           ├── secretbox.ts    #   AES-256-GCM for stored webhook URLs
 │           ├── intake.ts       #   shared job-creation path (all channels)
@@ -383,10 +397,16 @@ Builds are secret-free by design: `.dockerignore` excludes `.env*`, so `docker b
 | `CORS_ALLOWED_ORIGINS` | no | Extra origins allowed to call the API (comma-separated). |
 | `POSTGRES_PASSWORD` | compose | Used by `docker-compose.yml` for both the app connection string and the Postgres container. |
 | `SEED_ON_BOOT` | no | `true` → the container seeds the reference dataset after migrating. |
-| `TELEGRAM_BOT_TOKEN` | no | @BotFather token — enables the ingestion bot + alert DMs. |
-| `TELEGRAM_WEBHOOK_SECRET` | no | Secret token Telegram echoes on every webhook call (`openssl rand -hex 24`). |
-| `TELEGRAM_ADMIN_USER_IDS` | no | Comma-separated Telegram ids allowed to use admin commands. |
-| `TELEGRAM_BOT_USERNAME` | no | Bot username (no `@`) for t.me deep links on `/alerts`. |
+| `TELEGRAM_BOT_TOKEN` | no | @BotFather token — **notifier bot**: premium alert DMs + account linking. |
+| `TELEGRAM_WEBHOOK_SECRET` | no | Secret token Telegram echoes on notifier-webhook calls (`openssl rand -hex 24`). |
+| `TELEGRAM_ADMIN_USER_IDS` | no | Comma-separated Telegram ids allowed to use the admin intake bot (also gates Discord admin commands). |
+| `TELEGRAM_BOT_USERNAME` | no | Notifier bot username (no `@`) for t.me deep links on `/alerts`. |
+| `TELEGRAM_ADMIN_BOT_TOKEN` | no | @BotFather token of the **second bot** — admin intake bot (job composer wizard, `/addjob /jobs /publish /grant`). |
+| `TELEGRAM_ADMIN_WEBHOOK_SECRET` | no | Its own secret token (generate a DIFFERENT `openssl rand -hex 24`). |
+| `LIBRETRANSLATE_URL` | no | Self-hosted LibreTranslate base URL. Compose wires `http://libretranslate:5000` automatically; empty = translation off (English originals). |
+| `LIBRETRANSLATE_API_KEY` | no | Only when LibreTranslate runs with `LT_REQ_API_KEY`. |
+| `LIBRETRANSLATE_LOAD_ONLY` | no | Argos language pairs the bundled LibreTranslate loads (memory tuning, see DEPLOYMENT.md §7). |
+| `TRANSLATION_GLOSSARY_PATH` | no | Web3 glossary file (protects “On-chain”, “DeFi”, “TVL”, … from literal translation). Default `config/translation-glossary.json` is volume-mounted by compose; re-read every 60 s. Template: `config/translation-glossary.example.json`. |
 | `DISCORD_APPLICATION_ID` / `DISCORD_BOT_PUBLIC_KEY` | no | Discord app credentials — enable the slash-command ingestion bot (Ed25519-verified). |
 | `DISCORD_BOT_TOKEN` | no | Only needed to register the slash commands. |
 | `DISCORD_ADMIN_USER_IDS` | no | Comma-separated Discord ids allowed to use admin commands. |
@@ -431,6 +451,20 @@ The whole interface lives under `src/app/[locale]/` with
   long marketing copy) stays in its published language.
 - **Stats stay locale-neutral**: the tracking beacon buckets `/ru/markets`
   with `/markets` (locale prefixes are stripped in `deriveSection`).
+- **Job content is machine-translated on demand** (self-hosted LibreTranslate,
+  DB-cached per post+language in `Post.translations`): localized list/article
+  pages check the cache, translate the missing fields in one batched request,
+  persist, and serve; any failure (service down, no Argos model for a locale,
+  body > 20 000 chars) falls back to the English original — a broken
+  translator can never break or slow a page. See “Bots & background workers →
+  Machine translation” and DEPLOYMENT.md §7.
+- **Web3 jargon is protected by a custom glossary** (`src/lib/translation-glossary.ts`
+  + `config/translation-glossary.json`): terms like On-chain, DeFi, TVL, AMM,
+  DAO, NFT are swapped for opaque placeholders before each LibreTranslate
+  request and stitched back afterwards — never translated literally. The
+  custom file can map per-language replacements ("Yield farming" → ru
+  "Фарминг доходности") or un-protect a term per language (""), wins over the
+  built-in defaults term by term, and is re-read every 60 s without a restart.
 - Adding a language = one entry in `LANGUAGES` (`src/lib/constants.ts`) + one
   dictionary file; the routing, switcher and proxy pick it up.
 
@@ -583,8 +617,10 @@ All endpoints return `{ ok: true, data }` or `{ ok: false, error, issues? }`. Mu
 
 | Method | Path | Auth | Description |
 | --- | --- | --- | --- |
-| POST | `/api/webhooks/telegram` | `X-Telegram-Bot-Api-Secret-Token` | Job-ingestion bot: `/addjob /jobs /publish /stats /grant /revoke /start /whoami /alerts /unlink /help` |
-| GET | `/api/webhooks/telegram` | — | wiring status (configured, canSend, adminConfigured) |
+| POST | `/api/webhooks/telegram` | `X-Telegram-Bot-Api-Secret-Token` | **Notifier bot** (user-facing): `/start <code>`, `/alerts on\|off`, `/unlink`, `/whoami`, `/help` |
+| GET | `/api/webhooks/telegram` | — | notifier wiring status (configured, canSend, adminConfigured) |
+| POST | `/api/webhooks/telegram-admin` | `X-Telegram-Bot-Api-Secret-Token` | **Admin intake bot** (separate Telegram bot): `/start` menu + inline-button job wizard, `/addjob /jobs /publish /stats /grant /revoke` |
+| GET | `/api/webhooks/telegram-admin` | — | admin-bot wiring status |
 | POST | `/api/webhooks/discord` | Ed25519 signature | Discord slash-command twin: `/addjob /jobs /publish` (ephemeral replies) |
 | GET | `/api/webhooks/discord` | — | wiring status |
 | POST | `/api/bots/telegram/link` | session + CSRF | issue one-time t.me linking code (hash stored) |
