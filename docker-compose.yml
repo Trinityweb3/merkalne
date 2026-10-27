@@ -3,7 +3,8 @@
 #   app           : Next.js (standalone) on 127.0.0.1:3000, migrations on boot
 #   worker        : background bot process (job-feed ingestion + premium dispatch)
 #   db            : PostgreSQL 16 with a persistent volume and healthcheck
-#   libretranslate: self-hosted machine translation of job content
+#   libretranslate: self-hosted machine translation (final fallback for the
+#                   LLM provider chain: Groq → DeepSeek → Gemini → LibreTranslate)
 #
 #   cp .env.example .env  → fill values → docker compose up -d --build
 #
@@ -67,7 +68,14 @@ services:
       # Admin intake bot: job composer wizard (separate @BotFather bot)
       TELEGRAM_ADMIN_BOT_TOKEN: ${TELEGRAM_ADMIN_BOT_TOKEN:-}
       TELEGRAM_ADMIN_WEBHOOK_SECRET: ${TELEGRAM_ADMIN_WEBHOOK_SECRET:-}
-      # Machine translation of job content (self-hosted LibreTranslate)
+      # Machine translation of job content. LLM providers are tried in
+      # priority order (Groq → DeepSeek → Gemini); the self-hosted
+      # LibreTranslate service below is the final fallback. Set a key in
+      # .env to activate that provider — e.g. GROQ_API_KEY for the free
+      # Groq tier (recommended).
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      GOOGLE_AI_API_KEY: ${GOOGLE_AI_API_KEY:-}
       LIBRETRANSLATE_URL: ${LIBRETRANSLATE_URL:-http://libretranslate:5000}
       LIBRETRANSLATE_API_KEY: ${LIBRETRANSLATE_API_KEY:-}
       # Web3 glossary file location inside the container (see the volumes

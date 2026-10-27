@@ -39,6 +39,7 @@ scripts/serve-prod.sh
 scripts/set-telegram-webhook.ts
 scripts/sync-sqlite-schema.ts
 scripts/test-admin-bot-e2e.ts
+scripts/test-llm-translation.ts
 scripts/test-post-split-regression.ts
 scripts/test-translation-e2e.ts
 src/app/[locale]/[section]/[slug]/page.tsx

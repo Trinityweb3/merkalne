@@ -56,8 +56,15 @@ const envSchema = z.object({
   DONATION_SOL_ADDRESS: optionalAddress(32, 48),
   DONATION_BTC_ADDRESS: optionalAddress(26, 62),
   DONATION_USDT_EVM_ADDRESS: optionalAddress(42, 42),
-  // LibreTranslate (self-hosted machine translation of job content).
-  // Empty/absent = feature off: localized pages serve the English original.
+  // Machine translation of job content. LLM providers are tried in priority
+  // order (Groq → DeepSeek → Gemini); self-hosted LibreTranslate is the final
+  // fallback. All keys optional — empty/absent = that provider is skipped;
+  // when nothing at all is configured, localized pages serve the English
+  // original.
+  GROQ_API_KEY: optionalStr,
+  DEEPSEEK_API_KEY: optionalStr,
+  GOOGLE_AI_API_KEY: optionalStr,
+  // Self-hosted LibreTranslate (final translation fallback).
   LIBRETRANSLATE_URL: z.preprocess(
     emptyToUndefined,
     z

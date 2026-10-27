@@ -25,4 +25,11 @@ TEST_EXIT=$?
 
 kill "${SERVER_PID}" 2>/dev/null; pkill -f "next dev -p ${PORT}" 2>/dev/null; sleep 1
 mv /tmp/env.backup.translation .env
-exit "${TEST_EXIT}"
+
+# Part 2: in-process LLM provider chain (Groq → DeepSeek → Gemini → LT) —
+# mocked fetch, no server needed.
+echo "— LLM provider chain (in-process, mocked fetch) —"
+bun scripts/test-llm-translation.ts
+LLM_EXIT=$?
+
+[ "${TEST_EXIT}" -eq 0 ] && [ "${LLM_EXIT}" -eq 0 ] && exit 0 || exit 1

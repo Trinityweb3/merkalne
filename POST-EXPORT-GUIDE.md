@@ -282,17 +282,36 @@ still fail with `ConnectionRefused` from the containers while working from
 
 > **What is measured (privacy):** one row per deduplicated page view — path, section, a 2-letter country code from proxy headers (`XX` = unknown behind plain Caddy/nginx; Cloudflare's `CF-IPCountry` works automatically) and an **irreversible keyed hash** of IP + browser. No raw IP, no user agent, no user id, no cookies. Do-Not-Track requests are skipped entirely. The numbers appear once a day on `/about`; an admin can force a refresh via `POST /api/admin/stats`. Team cards, monthly recap videos and the pitch-deck link are edited in one file: `src/lib/about-content.ts`.
 
-### Machine translation (self-hosted LibreTranslate + Web3 glossary)
+### Machine translation (Groq/LLM provider chain + LibreTranslate fallback + Web3 glossary)
+
+Job content is translated by the **first configured provider** in this
+chain: **Groq → DeepSeek → Google Gemini → self-hosted LibreTranslate**.
+On any provider failure (rate limit, timeout, bad response) the same request
+falls through to LibreTranslate automatically, and every result is cached
+per language in the database. The active provider is shown on `/about`
+("Translation via Groq · openai/gpt-oss-120b …").
 
 | # | Variable | Write this (example) | Where to get it | Required? |
 |---|----------|----------------------|-----------------|-----------|
-| 35 | `LIBRETRANSLATE_URL` | *(leave empty)* | docker-compose wires `http://libretranslate:5000` internally. Set `http://127.0.0.1:5000` only for non-Docker local runs | No (empty = translation off; localized pages serve the English original) |
+| 34a | `GROQ_API_KEY` | `gsk_…` | **Recommended — free tier** (30 req/min, 1 000 req/day, no credit card): console.groq.com → API Keys → “Create API Key” | No |
+| 34b | `DEEPSEEK_API_KEY` | `sk-…` | platform.deepseek.com → API keys (paid, no free tier) | No |
+| 34c | `GOOGLE_AI_API_KEY` | `AIza…` | aistudio.google.com → “Get API key” | No |
+| 35 | `LIBRETRANSLATE_URL` | *(leave empty)* | The always-on **final fallback** — docker-compose wires `http://libretranslate:5000` internally. Set `http://127.0.0.1:5000` only for non-Docker local runs | No |
 | 36 | `LIBRETRANSLATE_API_KEY` | *(leave empty)* | Only when you start LibreTranslate with `LT_REQ_API_KEY` | No |
 | 37 | `LIBRETRANSLATE_LOAD_ONLY` | *(default list)* | Argos language pairs the bundled LibreTranslate loads (RAM tuning on small VPS) | No |
 | 38 | `TRANSLATION_GLOSSARY_PATH` | *(leave empty)* | Points at the Web3 glossary JSON; the default `config/translation-glossary.json` is already volume-mounted by compose | No |
 
-> **Web3 glossary — how jargon survives translation.** LibreTranslate would
-> translate "On-chain" literally and sound robotic. The app swaps every
+> **Groq free-tier notes.** The app uses `openai/gpt-oss-120b` (falls back to
+> `qwen/qwen3.8-27b` if that model is ever retired), serializes provider
+> requests with ≈2 s spacing to stay under 30 req/min, de-duplicates
+> identical strings in a batch, and honors a 429 `Retry-After` header by
+> routing requests to LibreTranslate until the window passes. Translation
+> results are cached forever per post+language, so the daily quota is only
+> spent on **new** content — 1 000 requests/day comfortably covers a fresh
+> editorial pass across all 19 non-English locales.
+
+> **Web3 glossary — how jargon survives translation.** A raw translator
+> would translate "On-chain" literally and sound robotic. The app swaps every
 > glossary term for an opaque placeholder before the request leaves the
 > process, and stitches your preferred term back in afterwards:
 >

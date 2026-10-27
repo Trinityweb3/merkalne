@@ -152,6 +152,39 @@ assert_file_contains "${ROOT}/src/lib/localize.ts" 'tags?: string[]' \
   "localize.ts: tags in the translation cache"
 assert_file_contains "${ROOT}/src/lib/translate.ts" 'chunkTimeoutMs' \
   "translate.ts: adaptive per-chunk timeout (bodies no longer time out)"
+# --- LLM translation provider chain (Groq → DeepSeek → Gemini → LibreTranslate) --
+assert_file_contains "${ROOT}/src/lib/translate.ts" 'api.groq.com/openai/v1' \
+  "translate.ts: Groq primary provider wired in"
+assert_file_contains "${ROOT}/src/lib/translate.ts" 'openai/gpt-oss-120b' \
+  "translate.ts: Groq primary model pinned"
+assert_file_contains "${ROOT}/src/lib/translate.ts" 'qwen/qwen3.8-27b' \
+  "translate.ts: Groq fallback model pinned"
+assert_file_contains "${ROOT}/src/lib/translate.ts" 'api.deepseek.com' \
+  "translate.ts: DeepSeek fallback provider present"
+assert_file_contains "${ROOT}/src/lib/translate.ts" 'generativelanguage.googleapis.com' \
+  "translate.ts: Gemini fallback provider present"
+assert_file_contains "${ROOT}/src/lib/translate.ts" 'activeTranslationProvider' \
+  "translate.ts: provider indicator exported for the About page"
+assert_file_contains "${ROOT}/src/lib/env.ts" 'GROQ_API_KEY' \
+  "env.ts: GROQ_API_KEY validated"
+assert_file_contains "${ROOT}/.env.example" 'GROQ_API_KEY=""' \
+  ".env.example: Groq key documented"
+assert_file_contains "${ROOT}/.env.example" 'DEEPSEEK_API_KEY=""' \
+  ".env.example: DeepSeek key documented"
+assert_file_contains "${ROOT}/.env.example" 'GOOGLE_AI_API_KEY=""' \
+  ".env.example: Gemini key documented"
+assert_file_contains "${ROOT}/docker-compose.yml" 'GROQ_API_KEY' \
+  "docker-compose: Groq key passed to the app service"
+assert_file_contains "${ROOT}/src/app/[locale]/about/page.tsx" 'Translation via' \
+  "about page: translation provider indicator rendered"
+[ -f "${ROOT}/scripts/test-llm-translation.ts" ] && echo "  [ok]   LLM provider chain test present (scripts/test-llm-translation.ts)" \
+  || { echo "  [FAIL] scripts/test-llm-translation.ts missing"; fail=1; }
+if grep -q 'GROQ_API_KEY' "${ROOT}/worker/worker.ts" 2>/dev/null; then
+  echo "  [FAIL] worker/worker.ts must not reference GROQ_API_KEY (worker does not translate)"
+  fail=1
+else
+  echo "  [ok]   worker untouched by the translation provider chain"
+fi
 # Run the same stale-merge guard the Docker build runs — the sandbox tree
 # itself must be clean before it is bundled.
 if sh "${ROOT}/docker/check-app-tree.sh" >/dev/null 2>&1; then
@@ -263,6 +296,20 @@ assert_file_contains "${VERIFY_DIR}/merklane/scripts/set-telegram-webhook.ts" 'T
   || { echo "  [FAIL] archive: src/lib/translation-glossary.ts MISSING"; archive_fail=1; }
 assert_file_contains "${VERIFY_DIR}/merklane/src/lib/translate.ts" 'protectText' \
   "archive: translate.ts carries the glossary pipeline"
+assert_file_contains "${VERIFY_DIR}/merklane/src/lib/translate.ts" 'api.groq.com/openai/v1' \
+  "archive: translate.ts ships the Groq primary provider"
+assert_file_contains "${VERIFY_DIR}/merklane/src/lib/translate.ts" 'openai/gpt-oss-120b' \
+  "archive: translate.ts pins the Groq primary model"
+assert_file_contains "${VERIFY_DIR}/merklane/.env.example" 'GROQ_API_KEY=""' \
+  "archive: .env.example documents GROQ_API_KEY"
+assert_file_contains "${VERIFY_DIR}/merklane/.env.example" 'GOOGLE_AI_API_KEY=""' \
+  "archive: .env.example documents GOOGLE_AI_API_KEY"
+assert_file_contains "${VERIFY_DIR}/merklane/docker-compose.yml" 'GROQ_API_KEY' \
+  "archive: compose passes the LLM provider keys"
+assert_file_contains "${VERIFY_DIR}/merklane/src/app/[locale]/about/page.tsx" 'Translation via' \
+  "archive: About page carries the provider indicator"
+[ -f "${VERIFY_DIR}/merklane/scripts/test-llm-translation.ts" ] && echo "  [ok]   archive: LLM provider chain test present" \
+  || { echo "  [FAIL] archive: scripts/test-llm-translation.ts MISSING"; archive_fail=1; }
 [ -f "${VERIFY_DIR}/merklane/config/translation-glossary.json" ] && echo "  [ok]   archive: active glossary config present" \
   || { echo "  [FAIL] archive: config/translation-glossary.json MISSING"; archive_fail=1; }
 [ -f "${VERIFY_DIR}/merklane/config/translation-glossary.example.json" ] && echo "  [ok]   archive: glossary template present" \

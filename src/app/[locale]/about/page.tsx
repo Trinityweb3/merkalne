@@ -2,6 +2,7 @@ import type { Metadata } from 'next'
 import { Link } from '@/i18n/navigation'
 import { Compass, FileText, Globe, ShieldCheck, Sparkles, Users, Video } from 'lucide-react'
 import { getLatestDailyStats } from '@/lib/stats/aggregate'
+import { activeTranslationProvider } from '@/lib/translate'
 import { AboutStats } from '@/components/site/about-stats'
 import { YoutubeEmbed } from '@/components/site/youtube-embed'
 import { Button } from '@/components/ui/button'
@@ -111,6 +112,7 @@ function TeamCard({ member }: { member: TeamMember }) {
 
 export default async function AboutPage() {
   const latest = await getLatestDailyStats()
+  const translationProvider = activeTranslationProvider()
 
   return (
     // Inline fallback mirrors .container (globals.css): even if the stylesheet
@@ -148,6 +150,16 @@ export default async function AboutPage() {
           </div>
         </section>
       )}
+
+      {/* Tiny indicator: which translation engine serves the 19 non-English
+          locales (server-side config — hidden when translation is off). */}
+      {translationProvider ? (
+        <p className="muted small" style={{ marginTop: -6, lineHeight: 1.7 }}>
+          Translation via {translationProvider.label}
+          {translationProvider.model ? ` · ${translationProvider.model}` : ''} — results are cached per
+          language after the first view.
+        </p>
+      ) : null}
 
       {/* ------------------------------------------------------------------ */}
       {/* Team                                                                */}

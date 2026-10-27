@@ -401,7 +401,10 @@ Builds are secret-free by design: `.dockerignore` excludes `.env*`, so `docker b
 | `TELEGRAM_BOT_USERNAME` | no | Notifier bot username (no `@`) for t.me deep links on `/alerts`. |
 | `TELEGRAM_ADMIN_BOT_TOKEN` | no | @BotFather token of the **second bot** — admin intake bot (bulk-paste composer, `/addjob /jobs /publish /grant`). |
 | `TELEGRAM_ADMIN_WEBHOOK_SECRET` | no | Its own secret token (generate a DIFFERENT `openssl rand -hex 24`). |
-| `LIBRETRANSLATE_URL` | no | Self-hosted LibreTranslate base URL. Compose wires `http://libretranslate:5000` automatically; empty = translation off (English originals). |
+| `GROQ_API_KEY` | no | **Primary LLM translator** — Groq free tier (30 RPM / 1 000 req/day, no credit card; console.groq.com → API Keys). Uses `openai/gpt-oss-120b` with `qwen/qwen3.8-27b` as the model fallback; requests are spaced ≈2 s to respect the free-tier RPM. |
+| `DEEPSEEK_API_KEY` | no | LLM translator fallback 2 (paid, platform.deepseek.com → `deepseek-chat`). |
+| `GOOGLE_AI_API_KEY` | no | LLM translator fallback 3 (aistudio.google.com → Gemini Flash via the OpenAI-compatible endpoint). |
+| `LIBRETRANSLATE_URL` | no | Self-hosted LibreTranslate base URL — the **final fallback** when no LLM key is set or the LLM provider fails/rate-limits. Compose wires `http://libretranslate:5000` automatically; empty = no fallback. |
 | `LIBRETRANSLATE_API_KEY` | no | Only when LibreTranslate runs with `LT_REQ_API_KEY`. |
 | `LIBRETRANSLATE_LOAD_ONLY` | no | Argos language pairs the bundled LibreTranslate loads (memory tuning, see DEPLOYMENT.md §7). |
 | `TRANSLATION_GLOSSARY_PATH` | no | Web3 glossary file (protects “On-chain”, “DeFi”, “TVL”, … from literal translation). Default `config/translation-glossary.json` is volume-mounted by compose; re-read every 60 s. Template: `config/translation-glossary.example.json`. |
@@ -446,16 +449,28 @@ The whole interface lives under `src/app/[locale]/` with
   long marketing copy) stays in its published language.
 - **Stats stay locale-neutral**: the tracking beacon buckets `/ru/markets`
   with `/markets` (locale prefixes are stripped in `deriveSection`).
-- **Job content is machine-translated on demand** (self-hosted LibreTranslate,
-  DB-cached per post+language in `Post.translations`): localized list pages
+- **Job content is machine-translated on demand** (provider chain:
+  **Groq → DeepSeek → Gemini → self-hosted LibreTranslate**, DB-cached per
+  post+language in `Post.translations`): localized list pages
   translate **title + card snippet + tags**, article pages translate
   **title + body + tags** — everything a reader sees. The first uncached view
   waits a bounded few seconds for the translation and falls back to the
   English original while the translation keeps filling the cache in the
-  background (the next view is fully localized); any failure (service down,
-  no Argos model for a locale, body > 20 000 chars) falls back to English —
-  a broken translator can never break or slow a page beyond that budget.
+  background (the next view is fully localized); any failure (provider down,
+  rate limit, no Argos model for a locale, body > 20 000 chars) falls back to
+  English — a broken translator can never break or slow a page beyond that
+  budget. An LLM provider that rate-limits (429) cools down for its
+  Retry-After window and LibreTranslate serves meanwhile; the active provider
+  is shown on the About page ("Translation via Groq …").
   See “Bots & background workers → Machine translation” and DEPLOYMENT.md §7.
+- **LLM translations use a Web3-hardened prompt** (`src/lib/translate.ts`):
+  a system prompt fixes industry terminology (DeFi, on-chain, TVL, AMM, DEX,
+  DAO, NFT, Layer 2, … — keep the community term, or the English word when
+  no established translation exists), pins URLs/`$TICKER`s/handles, demands
+  the exact ⟦N⟧ glossary placeholders back, and returns strict JSON;
+  identical strings in a batch are de-duplicated to conserve free-tier
+  tokens, and every provider request is serialized with ≈2 s spacing
+  (Groq free tier = 30 req/min).
 - **Web3 jargon is protected by a custom glossary** (`src/lib/translation-glossary.ts`
   + `config/translation-glossary.json`): terms like On-chain, DeFi, TVL, AMM,
   DAO, NFT are swapped for opaque placeholders before each LibreTranslate
