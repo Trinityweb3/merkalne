@@ -46,6 +46,8 @@ export const registerSchema = z.object({
   password: passwordSchema,
   name: nameSchema.optional(),
   acceptTerms: z.literal(true, { message: 'You must accept the Terms' }),
+  /** Referral code of the inviter (?ref=CODE) — optional, validated at lookup */
+  referralCode: z.string().trim().toUpperCase().regex(/^[A-Z0-9]{4,16}$/).optional(),
 })
 
 export const loginSchema = z.object({

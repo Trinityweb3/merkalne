@@ -33,6 +33,19 @@ export interface TelegramMessage {
   chat: TelegramChat
   date: number
   text?: string
+  /** Photo attachments (admin bot CMS uploads) — ascending by size. */
+  photo?: TelegramPhotoSize[]
+  caption?: string
+}
+
+/** One size variant of a photo attachment (Telegram always sends several). */
+export interface TelegramPhotoSize {
+  file_id: string
+  file_unique_id: string
+  width: number
+  height: number
+  /** Approximate bytes (present for the sizes Telegram reports it for). */
+  file_size?: number
 }
 
 /** `callback_query` — inline keyboard button presses (admin bot wizard). */
@@ -212,4 +225,63 @@ export function parseTelegramCommand(text: string | undefined): ParsedCommand | 
   const match = /^\/([A-Za-z0-9_]+)(?:@[A-Za-z0-9_]+)?\s*([\s\S]*)$/.exec(text.trim())
   if (!match) return null
   return { command: match[1].toLowerCase(), args: match[2].trim() }
+}
+
+// ---------------------------------------------------------------------------
+// File downloads (admin bot CMS: avatar / logo uploads)
+// ---------------------------------------------------------------------------
+
+/**
+ * Download a Telegram file and return it as a base64 data URL — the storage
+ * format SiteSetting uses, so uploaded images live in the database and
+ * survive container recreation without baking files into the Docker image.
+ *
+ * `getFile` maps a file_id to a temporary path on Telegram's CDN; the file
+ * itself is then fetched from /file/bot<token>/<path>. Photos arrive as
+ * JPEG, which is also the mime type returned.
+ */
+export async function telegramDownloadAsDataUrl(
+  fileId: string,
+  opts?: { token?: string; maxBytes?: number },
+): Promise<{ ok: true; dataUrl: string; bytes: number } | { ok: false; error: string }> {
+  const token = opts?.token ?? botEnv.TELEGRAM_BOT_TOKEN
+  const maxBytes = opts?.maxBytes ?? 2_000_000 // 2 MB ≈ 2.7 MB as base64
+  if (!token) return { ok: false, error: 'bot token not configured' }
+
+  try {
+    const info = await fetch(`${API_BASE}/bot${token}/getFile`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file_id: fileId }),
+      signal: AbortSignal.timeout(10_000),
+    })
+    const payload = (await info.json().catch(() => null)) as
+      | { ok: boolean; result?: { file_path?: string; file_size?: number }; description?: string }
+      | null
+    if (!info.ok || !payload?.ok || !payload.result?.file_path) {
+      return { ok: false, error: payload?.description ?? `getFile HTTP ${info.status}` }
+    }
+    if (payload.result.file_size && payload.result.file_size > maxBytes) {
+      return { ok: false, error: `file too large (${payload.result.file_size} bytes > ${maxBytes})` }
+    }
+
+    const res = await fetch(`${API_BASE}/file/bot${token}/${payload.result.file_path}`, {
+      signal: AbortSignal.timeout(20_000),
+    })
+    if (!res.ok) return { ok: false, error: `download HTTP ${res.status}` }
+    const buf = Buffer.from(await res.arrayBuffer())
+    if (buf.byteLength > maxBytes) {
+      return { ok: false, error: `file too large (${buf.byteLength} bytes > ${maxBytes})` }
+    }
+
+    const path = payload.result.file_path.toLowerCase()
+    const mime = path.endsWith('.png')
+      ? 'image/png'
+      : path.endsWith('.webp')
+        ? 'image/webp'
+        : 'image/jpeg'
+    return { ok: true, dataUrl: `data:${mime};base64,${buf.toString('base64')}`, bytes: buf.byteLength }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'network error' }
+  }
 }

@@ -52,6 +52,9 @@ function AuthForm() {
   const [mode, setMode] = useState<'login' | 'register'>(initialMode)
   const nextUrl = searchParams.get('next') ?? '/'
   const oauthError = searchParams.get('error')
+  // Referral code from /auth?mode=register&ref=CODE — carried through the
+  // register call so the new account is bound to its inviter.
+  const referralCode = (searchParams.get('ref') ?? '').trim().toUpperCase()
 
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
@@ -88,7 +91,13 @@ function AuthForm() {
       } else {
         await api('/api/auth/register', {
           method: 'POST',
-          body: { email, password, name: name || undefined, acceptTerms },
+          body: {
+            email,
+            password,
+            name: name || undefined,
+            acceptTerms,
+            ...(referralCode ? { referralCode } : {}),
+          },
         })
         toast.success('Account created — check your inbox to verify your email.')
         void refresh()

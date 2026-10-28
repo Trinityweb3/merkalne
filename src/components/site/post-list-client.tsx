@@ -1,10 +1,11 @@
 'use client'
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, Fragment } from 'react'
 import { useTranslations } from 'next-intl'
 import { usePathname } from '@/i18n/navigation'
 import { useSearchParams } from 'next/navigation'
 import { PostCard } from '@/components/site/post-card'
+import { AdSlot } from '@/components/site/ads/ad-slot'
 import { Button } from '@/components/ui/button'
 import { api } from '@/lib/api-client'
 import type { SerializedPost } from '@/lib/posts'
@@ -94,8 +95,16 @@ export function PostListClient({
         {t('count', { count: total })}
       </p>
       <div className="grid-3">
-        {posts.map((post) => (
-          <PostCard key={post.id} post={post} />
+        {posts.map((post, i) => (
+          <Fragment key={post.id}>
+            <PostCard post={post} />
+            {/* In-feed sponsored card after the 3rd and 6th post — visually
+                distinct from real listings, never rendered when the auction
+                is empty (the slot collapses to nothing). */}
+            {(i + 1 === 3 || i + 1 === 6) && i + 1 < posts.length ? (
+              <AdSlot slot="feed" variant="feed" />
+            ) : null}
+          </Fragment>
         ))}
       </div>
 

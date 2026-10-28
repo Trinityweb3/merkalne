@@ -29,14 +29,14 @@ Built with **Next.js 16 (App Router) · TypeScript · Tailwind CSS 4 · Prisma �
 
 **Frontend (pixel-faithful to the reference design)**
 
-- Dark-first design system with light theme toggle, exact reference tokens (`#0e1013` background, `#54c4f5` link accent, Inter typography)
+- De-slopped editorial design system (2026): Space Grotesk display headings, sharp `rounded-sm` corners, borderless tinted cards with a hover glow, massive grid-patterned hero — the pre-redesign stylesheet is kept verbatim as `src/app/globals.legacy.css` (backup, not imported)
 - Home with hero search, quick links and the six content rails (Intern/Junior, Mid/Senior, Opportunities, Markets, Insights, Blog)
 - Section pages with filter dropdowns, progressive "Load more" pagination and empty states
 - Full article pages with sanitised markdown rendering, hashtags, view/like/dislike/report row and comments
 - Search page with match highlighting (`<mark>`), snippets around the first match and numbered pagination
 - Auth screens: login/register with Google, GitHub, email/password and magic links
 - Profile cabinet: overview, bookmarks, my posts, security (password, email change, session management) and the free Blog composer
-- `/ads` — "Coming Soon" page with a working email waitlist capture
+- `/ads` — advertiser dashboard: create campaigns, watch the weighted auction spend live, top up with crypto (auth-gated; anonymous visitors land on the login screen)
 - `/premium` pricing page (monthly/yearly toggle, FAQ) wired to an honest "payments not launched" API
 - Global chrome: sticky header with 20-language picker (incl. RTL), theme toggle, mobile drawer, donation side-tab, cookie consent with granular preferences, first-visit safety notice, persistent footer safety text
 - **About page as a live investor page**: team cards (initials avatars, no assets needed), daily statistics snapshot ("Merklane as of …"), monthly recap video slots (click-to-load YouTube embeds) and a pitch-deck card — see [About page: team & daily statistics](#about-page-team--daily-statistics)
@@ -327,7 +327,7 @@ what creates mixed states. After the redeploy, hard-refresh the browser
 
 **Built-in guard.** The Dockerfile now runs `docker/check-app-tree.sh` as the
 first step of the builder stage. If `src/app` contains anything beyond the
-expected entries (`[locale]/`, `api/`, `globals.css`, `robots.ts`,
+expected entries (`[locale]/`, `api/`, `globals.css`, `globals.legacy.css`, `robots.ts`,
 `sitemap.ts`) — i.e. leftovers from a pre-i18n bundle such as
 `src/app/[section]/` or the old root `src/app/layout.tsx` — the build stops
 immediately with a named diagnosis and the fix steps above, instead of
@@ -425,6 +425,13 @@ Builds are secret-free by design: `.dockerignore` excludes `.env*`, so `docker b
 | `SOCIAL_VAZIMA_URL` | no | Team card link for Vazima (CEO) on `/about` — opens in a new tab; empty = card renders without a link. |
 | `SOCIAL_TRINITY_URL` | no | Team card link for Trinity (Programmer) on `/about`. |
 | `SOCIAL_GROBOFHIK_URL` | no | Team card link for Grobofhik (Programmer) on `/about`. |
+| `ADS_ENABLED` | no | Master switch for ad SERVING (`true`/`false`, default on). `false` makes every `<AdSlot/>` render nothing while the /ads dashboard keeps working. |
+| `ADS_TOPUP_MODE` | no | How a crypto top-up is confirmed: empty/AUTO (default — `blockbee` when `BLOCKBEE_API_KEY` is set, else `manual`), `blockbee`, `manual` (admin confirms) or `simulate` (advertiser self-confirms; demos/local only, never on a public site). |
+| `ADS_TOPUP_SEED` | no | Seed for the deterministic deposit-address derivation (mock HD wallet, manual/simulate fallback only). Set a long random string in production; empty = dev default. |
+| `BLOCKBEE_API_KEY` | no | BlockBee payment processor API key (https://blockbee.io — formerly CryptAPI). When set, ad top-ups run through BlockBee (hosted deposit addresses, AML screening, ~0.25–1% fees) and referral-payout withdrawals are enabled. Empty = processor disabled (manual top-up fallback, withdrawals off). |
+| `BLOCKBEE_IPN_SECRET` | no | Shared secret for HMAC verification of BlockBee webhooks (the `token` param = HMAC-SHA256 over the remaining query string). BlockBee's production RSA scheme (`x-ca-signature` header vs the processor's public key) is verified as well — a webhook is accepted when EITHER passes. Generate with `openssl rand -hex 32`. |
+| `BLOCKBEE_COINS` | no | Comma-separated allowlist of BlockBee coin tickers for top-ups and payouts. Default: USDT/USDC on Polygon, BSC and Arbitrum + SOL, BNB, POL (stablecoins and major coins on cheap networks). TRON tickers are ALWAYS rejected (high fraud rate — policy, not overridable). |
+| `BLOCKBEE_MIN_PAYOUT_CENTS` | no | Minimum referral withdrawal in US cents (default 2000 = $20.00). |
 
 A line-by-line "where to get it" walkthrough for every variable lives in [POST-EXPORT-GUIDE.md](POST-EXPORT-GUIDE.md).
 
@@ -637,6 +644,16 @@ All endpoints return `{ ok: true, data }` or `{ ok: false, error, issues? }`. Mu
 | --- | --- | --- |
 | GET | `/api/health` | liveness + DB check (Docker healthcheck) |
 | POST | `/api/waitlist` | Merklane Ads waitlist (idempotent, Resend confirmation) |
+| GET | `/api/ads/serve?slot=…` | one weighted-random auction pick for a slot (204 when nothing eligible — no empty boxes) |
+| POST | `/api/ads/click` | record a click on a served impression (same-origin enforced, never billed twice) |
+| GET/POST | `/api/ads/campaigns` | advertiser: list own campaigns with view/click stats / create (starts paused) |
+| PATCH | `/api/ads/campaigns/[id]` | advertiser: pause / resume own campaign (resume needs balance ≥ bid) |
+| POST/GET | `/api/ads/topups[/id]` | crypto top-up: create a payment intention (BlockBee hosted address, or the derived mock address in manual/simulate fallback) / poll status |
+| POST | `/api/ads/topups/[id]/simulate` | DEMO path — self-confirm a top-up (only when ADS_TOPUP_MODE=simulate) |
+| POST | `/api/admin/ads/topups/[id]/confirm` | admin: mark a deposit received, credit the campaign (optional amount override) |
+| GET/POST | `/api/webhooks/blockbee` | BlockBee IPN + payout webhooks: signature-verified (RSA `x-ca-signature` and/or HMAC `token`), rate-limited, idempotent — credits campaigns, pays referral commissions, settles withdrawals |
+| GET | `/api/account/referral` | referral cabinet: shareable link/code, balance, lifetime stats, withdrawal history |
+| POST | `/api/account/referral/withdraw` | pay out the referral balance to the user's crypto address via the BlockBee payout chain (balance deducted only after on-chain confirmation) |
 | POST | `/api/contact` | contact form |
 | GET/PUT | `/api/preferences` | interface locale (20 languages, RTL-aware) |
 | POST | `/api/premium/subscribe` | honest 503 — stage-2 billing placeholder |
@@ -674,9 +691,27 @@ Server-to-server webhook endpoints are exempt from browser CSRF (they carry no c
 
 ---
 
+## Merklane Ads — auction, crypto top-ups, placements
+
+Three primitives power the ads system (all money is **US cents** in `Int` columns — portable across PostgreSQL and SQLite):
+
+- **Weighted random auction** (`src/lib/ads/auction.ts`): when a slot asks for an ad, every active campaign whose balance covers its bid enters a roulette-wheel draw weighted by `bidPerView` — a 2¢ bid is picked twice as often as a 1¢ bid. Billing is **atomic per impression** (a conditional `updateMany` guards the decrement, so concurrent requests can never overdraw), each serve writes an `AdImpression` (view), and a drained campaign **auto-pauses** until the next top-up.
+- **Crypto top-ups via BlockBee** (`src/lib/ads/blockbee.ts` + `src/lib/ads/topup.ts` + `/api/ads/topups*`): the system no longer generates its own wallets (gas, key-custody and AML exposure) — the external [BlockBee](https://blockbee.io) processor (formerly CryptAPI) hosts the deposit addresses, screens the funds and confirms payments. Creating a top-up calls BlockBee's `/{coin}/create/` endpoint with a callback URL unique per intention (`order_id` + an unguessable `nonce`), gets back a hosted deposit address and shows it with the expected USD amount. The IPN webhook at `/api/webhooks/blockbee` verifies the signature (RSA `x-ca-signature` against the processor's public key and/or HMAC `token` keyed with `BLOCKBEE_IPN_SECRET`), validates `order_id` → pending intention + nonce, and credits the campaign **exactly once** (transaction-guarded status flip) — paying the referrer's 50% commission in the same transaction. Coins: stablecoins + majors on cheap networks (Solana, Polygon, BSC, Arbitrum); **TRON is banned by policy** and cannot be re-enabled via config. Fallback modes for testing/provider outages: `manual` (deterministic mock address, admin confirms via `/api/admin/ads/topups/[id]/confirm`) and `simulate` (advertiser self-confirms; demos only).
+- **Referral system — 50% commissions** (`src/lib/referral.ts` + `/api/account/referral*`): every user gets a shareable code (`/auth?mode=register&ref=CODE`); accounts registered with a code are bound to their inviter (write-once, self-referral impossible). When a referred user's top-up is confirmed — by BlockBee IPN, admin confirm or simulate — half of the credited amount lands in the referrer's `referralBalance` (US cents), exactly once, inside the same transaction. The profile's **Referrals** tab shows the share link, live stats and a withdraw form: payouts run through the BlockBee payout chain (`/payout/request/create/` → `/payout/create/` → `/payout/process/`) to the user's own address, and the balance is **deducted only after the payout webhook confirms on-chain** — failed/expired payouts never take the user's money. When the stage-2 Premium billing lands, the same `creditReferralCommission()` helper hooks into its checkout confirmation.
+- **Payment audit trail** (`PaymentLog` table): every payment event — IPNs (accepted and rejected), payout transitions, admin/simulate confirms, referral commissions, withdrawal requests — is logged with the BlockBee transaction id (`uuid`/payout id/tx hash) for operator reconciliation in one place.
+- **`<AdSlot/>` placements** (`src/components/site/ads/ad-slot.tsx`): home banner below the hero, in-feed cards after the 3rd/6th post on section pages (plus one in the home first rail) and a native card at the bottom of every article. Every placement renders **nothing** on 204 (auction empty / `ADS_ENABLED=false`) — a sold-out auction never leaves empty boxes. Ads are visually distinct by design: a "Sponsored" badge, tinted background and `rel="sponsored"`.
+
+The **`/ads` advertiser dashboard** (auth-gated like the profile cabinet) manages campaigns: create (starts paused — no free impressions), live balance/impressions/clicks/CTR, pause/resume and the crypto top-up modal (coin picker in BlockBee mode) with address polling. e2e: `bash scripts/run-ads-e2e.sh` (42 checks, manual/simulate fallback) + `bash scripts/run-blockbee-e2e.sh` (58 checks — mock processor with real RSA signing: intention → IPN → credit → referral commission → payout chain → webhook settle) + unit: `bun scripts/test-ads-auction.ts` (13 checks).
+
+## Site CMS via the admin bot (team & logo)
+
+The Telegram admin bot doubles as a tiny CMS. **👥 Manage team** per member (Vazima / Trinity / Grobofhik): send a text to replace the bio, send a photo to replace the avatar. **🖼 Change logo** uploads the site logo shown on `/about`. Photos are downloaded from Telegram, stored as base64 data-URLs in the `SiteSetting` table (survive container recreation, no Docker image changes) and rendered with a 60 s read cache. The `/about` page merges: bot upload → static placeholder in `about-content.ts` → localized placeholder text.
+
+---
+
 ## Bots & background workers
 
-Two bots + one worker process, all wired into the same Prisma database and sharing one job-creation path (`src/lib/bots/intake.ts`): the **notifier bot** (premium alert DMs, account linking), the **admin intake bot** (bulk-paste job composer + admin commands) and the **background worker** (feed scraping, alert dispatch, daily stats).
+Two bots + one worker process, all wired into the same Prisma database and sharing one job-creation path (`src/lib/bots/intake.ts`): the **notifier bot** (premium alert DMs, account linking), the **admin intake bot** (bulk-paste job composer + admin commands + the site CMS above) and the **background worker** (feed scraping, alert dispatch, daily stats).
 
 ### 1. Job Ingestion Bot (Telegram)
 

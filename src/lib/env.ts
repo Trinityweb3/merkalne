@@ -94,6 +94,51 @@ const envSchema = z.object({
   // Custom translation glossary file (Web3 jargon protection). Empty = the
   // conventional config/translation-glossary.json next to the app, if any.
   TRANSLATION_GLOSSARY_PATH: optionalStr,
+  // Merklane Ads. ADS_ENABLED=false hides every <AdSlot/> (serve API answers
+  // 204) — e.g. while policies are being reviewed. The top-up mode decides
+  // how a deposit gets confirmed:
+  //   "blockbee" — BlockBee payment processor (production): the top-up modal
+  //     creates a payment intention via the BlockBee API and the IPN webhook
+  //     at /api/webhooks/blockbee credits the campaign automatically.
+  //   "manual" (default) — an admin confirms in the dashboard after checking
+  //     the wallet, safe when no processor is configured.
+  //   "simulate" — the ADVERTISER can confirm their own pending top-up
+  //     (demos and local testing only).
+  // Empty/unset = AUTO: "blockbee" when BLOCKBEE_API_KEY is set, else "manual".
+  ADS_ENABLED: z.preprocess(
+    emptyToUndefined,
+    z.enum(['true', 'false']).default('true').transform((v) => v === 'true'),
+  ),
+  ADS_TOPUP_MODE: z.preprocess(
+    emptyToUndefined,
+    z.enum(['manual', 'simulate', 'blockbee']).optional(),
+  ),
+  // Seed for the deterministic deposit-address derivation (mock HD wallet,
+  // manual/simulate fallback modes only).
+  ADS_TOPUP_SEED: optionalStr,
+  // BlockBee payment processor (https://blockbee.io — formerly CryptAPI).
+  // API key from the BlockBee dashboard. When set (and ADS_TOPUP_MODE is not
+  // pinned to manual/simulate) ad top-ups run through BlockBee: the /create/
+  // endpoint issues a unique deposit address per intention and the IPN
+  // webhook credits the campaign balance. Referral withdrawals use the
+  // BlockBee payout chain. Empty = BlockBee disabled (manual fallback).
+  BLOCKBEE_API_KEY: optionalStr,
+  // Shared secret for HMAC verification of BlockBee webhooks (the `token`
+  // query parameter, HMAC-SHA256 over the remaining query string). The
+  // production RSA scheme (x-ca-signature header) is verified as well —
+  // a webhook is accepted when EITHER verification passes.
+  BLOCKBEE_IPN_SECRET: optionalStr,
+  // Comma-separated allowlist of BlockBee coin tickers offered for top-ups
+  // and payouts. Defaults to stablecoins + major coins on cheap networks.
+  // TRON tickers (trx, trc20_*) are ALWAYS rejected regardless of this list
+  // (high fraud rate, client policy).
+  BLOCKBEE_COINS: optionalStr,
+  // Minimum referral withdrawal in US cents (default 2000 = $20.00 — below
+  // that, network + processor fees eat the payout).
+  BLOCKBEE_MIN_PAYOUT_CENTS: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().min(100).max(1_000_000).default(2000),
+  ),
   CORS_ALLOWED_ORIGINS: z.preprocess(emptyToUndefined, z.string().default('')),
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
 })

@@ -6,6 +6,7 @@ import {
   parseTelegramCommand,
   tgEscape,
   telegramAnswerCallbackQuery,
+  telegramDownloadAsDataUrl,
   telegramEditMessageText,
   telegramSendMessage,
   type TelegramInlineButton,
@@ -23,6 +24,14 @@ import {
 } from '@/lib/bots/intake'
 import { parseBulkJobText } from '@/lib/bots/bulk-parse'
 import { POST_SECTIONS, SECTION_META } from '@/lib/constants'
+import {
+  SITE_LOGO_KEY,
+  TEAM_MEMBER_KEYS,
+  setSiteSetting,
+  siteSettingTeamKey,
+  teamMemberLabel,
+  type TeamMemberKey,
+} from '@/lib/site-settings'
 
 /**
  * POST /api/webhooks/telegram-admin — the ADMIN INTAKE BOT webhook.
@@ -62,6 +71,11 @@ const HELP_TEXT = [
   'labeled lines ("Company: X") and plain pastes both work.',
   'Confirm the parsed fields with the inline buttons. Done.',
   '',
+  '<b>Site content (CMS)</b>',
+  '👥 Manage team — set each member\u2019s bio and avatar photo.',
+  '🖼 Change logo — upload the site logo shown on /about.',
+  'Changes go live within a minute (60 s cache).',
+  '',
   '<b>Power commands</b>',
   '/addjob Title | Company | URL | Section | tags,comma [key=value…]',
   '/jobs [n] — recent postings · /publish &lt;id&gt;',
@@ -82,8 +96,35 @@ const cb = (text: string, data: string): TelegramInlineButton => ({ text, callba
 const row = (...buttons: TelegramInlineButton[]): TelegramInlineButton[] => buttons
 
 const mainMenu: Keyboard = {
-  inline_keyboard: [row(cb('➕ Add job', 'new')), row(cb('📋 Recent jobs', 'jobs'), cb('📊 Stats', 'stats')), row(cb('❓ Help', 'help'))],
+  inline_keyboard: [
+    row(cb('➕ Add job', 'new')),
+    row(cb('📋 Recent jobs', 'jobs'), cb('📊 Stats', 'stats')),
+    row(cb('👥 Manage team', 'team'), cb('🖼 Change logo', 'logo')),
+    row(cb('❓ Help', 'help')),
+  ],
 }
+
+/** Team CMS root: one button per member (matches about-content.ts). */
+function teamMenuKeyboard(): Keyboard {
+  return {
+    inline_keyboard: [
+      ...TEAM_MEMBER_KEYS.map((m) => row(cb(`👤 ${teamMemberLabel(m)}`, `member:${m}`))),
+      row(cb('⬅️ Menu', 'menu')),
+    ],
+  }
+}
+
+/** Per-member actions: bio text or avatar photo. */
+function memberMenuKeyboard(member: TeamMemberKey): Keyboard {
+  return {
+    inline_keyboard: [
+      row(cb('✏️ Bio', `bio:${member}`), cb('🖼 Avatar', `avatar:${member}`)),
+      row(cb('⬅️ Team', 'team'), cb('⬅️ Menu', 'menu')),
+    ],
+  }
+}
+
+const cancelOnlyKeyboard: Keyboard = { inline_keyboard: [row(cb('❌ Cancel', 'abort'))] }
 
 /** Section picker shown while a parsed draft awaits confirmation. */
 const sectionPickerKeyboard: Keyboard = {
@@ -108,7 +149,7 @@ const confirmKeyboard: Keyboard = {
 // Paste / confirm state (TelegramAdminState)
 // ---------------------------------------------------------------------------
 
-type Step = 'paste' | 'confirm'
+type Step = 'paste' | 'confirm' | 'cms'
 
 // NOTE: a type alias (not an interface) — object *type aliases* receive an
 // implicit index signature, which is what makes this assignable to Prisma's
@@ -116,6 +157,8 @@ type Step = 'paste' | 'confirm'
 type Draft = {
   spec?: JobIntakeSpec
   guesses?: string[]
+  /** CMS flow target while step === 'cms' (team bio/avatar, site logo). */
+  cms?: { kind: 'bio' | 'avatar' | 'logo'; member?: TeamMemberKey }
 }
 
 function esc(s: string): string {
@@ -288,6 +331,95 @@ async function handleCallback(update: TelegramUpdate, fromId: string, chatId: st
     return
   }
 
+  // --- Site CMS: team bios/avatars + site logo ----------------------------
+  if (data === 'team') {
+    await clearState(fromId)
+    await edit(
+      chatId,
+      messageId,
+      '<b>👥 Manage team</b>\nPick a member to edit their bio or avatar.',
+      teamMenuKeyboard(),
+    )
+    return
+  }
+  if (data === 'logo') {
+    await setState(fromId, 'cms', { cms: { kind: 'logo' } })
+    await edit(
+      chatId,
+      messageId,
+      [
+        '<b>🖼 Change the site logo</b>',
+        '',
+        'Send the logo as a photo now (square works best; the card renders',
+        'it at 56px, /about up to 160px). I will download it, store it and',
+        'the site picks it up within a minute.',
+        '',
+        '<i>Send /cancel to abort.</i>',
+      ].join('\n'),
+      cancelOnlyKeyboard,
+    )
+    return
+  }
+  if (data.startsWith('member:')) {
+    const member = data.slice(7) as TeamMemberKey
+    if (!(TEAM_MEMBER_KEYS as readonly string[]).includes(member)) {
+      await telegramAnswerCallbackQuery(cq.id, 'Unknown member.', { token: TOKEN, showAlert: true })
+      return
+    }
+    await clearState(fromId)
+    await edit(
+      chatId,
+      messageId,
+      `<b>👤 ${teamMemberLabel(member)}</b>\nWhat do you want to change?`,
+      memberMenuKeyboard(member),
+    )
+    return
+  }
+  if (data.startsWith('bio:')) {
+    const member = data.slice(4) as TeamMemberKey
+    if (!(TEAM_MEMBER_KEYS as readonly string[]).includes(member)) {
+      await telegramAnswerCallbackQuery(cq.id, 'Unknown member.', { token: TOKEN, showAlert: true })
+      return
+    }
+    await setState(fromId, 'cms', { cms: { kind: 'bio', member } })
+    await edit(
+      chatId,
+      messageId,
+      [
+        `<b>✏️ Bio for ${teamMemberLabel(member)}</b>`,
+        '',
+        'Send the new bio as plain text (up to 400 characters).',
+        'The current bio is replaced completely.',
+        '',
+        '<i>Send /cancel to abort.</i>',
+      ].join('\n'),
+      cancelOnlyKeyboard,
+    )
+    return
+  }
+  if (data.startsWith('avatar:')) {
+    const member = data.slice(7) as TeamMemberKey
+    if (!(TEAM_MEMBER_KEYS as readonly string[]).includes(member)) {
+      await telegramAnswerCallbackQuery(cq.id, 'Unknown member.', { token: TOKEN, showAlert: true })
+      return
+    }
+    await setState(fromId, 'cms', { cms: { kind: 'avatar', member } })
+    await edit(
+      chatId,
+      messageId,
+      [
+        `<b>🖼 Avatar for ${teamMemberLabel(member)}</b>`,
+        '',
+        'Send the photo now — square works best (rendered at 56px).',
+        'The current avatar is replaced completely.',
+        '',
+        '<i>Send /cancel to abort.</i>',
+      ].join('\n'),
+      cancelOnlyKeyboard,
+    )
+    return
+  }
+
   // --- everything below needs a parsed draft awaiting confirmation ----------
   if (data === 'back') {
     if (!state || state.step !== 'confirm' || !state.draft.spec) {
@@ -426,9 +558,33 @@ async function handleMessage(update: TelegramUpdate, fromId: string, chatId: str
     return
   }
 
-  // Non-command text → the bulk paste.
+  // Non-command text → three possible flows, in priority order:
+  //   1. CMS bio capture (step 'cms', kind 'bio')
+  //   2. bulk paste    (step 'paste' / 'confirm')
+  //   3. hint          (no active state)
   if (!isAdmin) return void (await deny(chatId))
   const state = await getState(fromId)
+
+  if (state?.step === 'cms' && state.draft.cms?.kind === 'bio' && state.draft.cms.member) {
+    const member = state.draft.cms.member
+    const bio = text.trim()
+    if (bio.length < 3 || bio.length > 400) {
+      await send(chatId, '⚠️ Bio must be 3–400 characters. Try again, or /cancel.')
+      return
+    }
+    await setSiteSetting(siteSettingTeamKey(member, 'bio'), bio)
+    await clearState(fromId)
+    await send(
+      chatId,
+      `✅ Bio for <b>${teamMemberLabel(member)}</b> saved.\n/about picks it up within a minute.`,
+      mainMenu,
+    )
+    await db.ingestionLog
+      .create({ data: { source: 'telegram', action: 'cms-bio-set', actor: `tg-admin:${fromId}`, detail: member } })
+      .catch(() => undefined)
+    return
+  }
+
   if (!state || (state.step !== 'paste' && state.step !== 'confirm')) {
     await send(chatId, 'Send /start to open the admin menu, or ➕ Add job to paste a job.', mainMenu)
     return
@@ -445,6 +601,77 @@ async function handleMessage(update: TelegramUpdate, fromId: string, chatId: str
 
 async function deny(chatId: string): Promise<void> {
   await send(chatId, '⛔ This is the admin intake bot. Your Telegram id is not listed in TELEGRAM_ADMIN_USER_IDS.')
+}
+
+// ---------------------------------------------------------------------------
+// Photo uploads (CMS avatar / logo flows)
+// ---------------------------------------------------------------------------
+
+/**
+ * A photo message while step === 'cms' with kind avatar/logo: download the
+ * LARGEST size Telegram offers, store it as a data-URL SiteSetting and
+ * confirm. Photos outside the flow get a hint instead of being eaten.
+ */
+async function handlePhoto(update: TelegramUpdate, fromId: string, chatId: string, isAdmin: boolean): Promise<void> {
+  if (!isAdmin) return void (await deny(chatId))
+
+  const state = await getState(fromId)
+  const cms = state?.step === 'cms' ? state.draft.cms : undefined
+  if (!cms || (cms.kind !== 'avatar' && cms.kind !== 'logo')) {
+    await send(
+      chatId,
+      '📷 Got the photo — but nothing is waiting for one. Use 👥 Manage team or 🖼 Change logo first.',
+      mainMenu,
+    )
+    return
+  }
+
+  const sizes = update.message?.photo ?? []
+  const largest = sizes[sizes.length - 1]
+  if (!largest) {
+    await send(chatId, '⚠️ No usable photo found in that message. Try sending it as a photo, not a file.')
+    return
+  }
+
+  const download = await telegramDownloadAsDataUrl(largest.file_id, { token: TOKEN })
+  if (!download.ok) {
+    await send(chatId, `⚠️ Download failed (${download.error}). Try again, or /cancel.`)
+    return
+  }
+
+  if (cms.kind === 'logo') {
+    await setSiteSetting(SITE_LOGO_KEY, download.dataUrl)
+    await clearState(fromId)
+    await send(
+      chatId,
+      `✅ Site logo updated (${(download.bytes / 1024).toFixed(0)} KB). /about shows it within a minute.`,
+      mainMenu,
+    )
+  } else if (cms.member) {
+    const member = cms.member
+    await setSiteSetting(siteSettingTeamKey(member, 'avatar'), download.dataUrl)
+    await clearState(fromId)
+    await send(
+      chatId,
+      `✅ Avatar for <b>${teamMemberLabel(member)}</b> updated (${(download.bytes / 1024).toFixed(0)} KB).`,
+      mainMenu,
+    )
+  } else {
+    await clearState(fromId)
+    await send(chatId, '⚠️ Lost track of the member — start again from 👥 Manage team.', mainMenu)
+    return
+  }
+
+  await db.ingestionLog
+    .create({
+      data: {
+        source: 'telegram',
+        action: `cms-${cms.kind}-set`,
+        actor: `tg-admin:${fromId}`,
+        detail: `${cms.kind === 'avatar' ? cms.member : 'logo'} · ${download.bytes}B`,
+      },
+    })
+    .catch(() => undefined)
 }
 
 // ---------------------------------------------------------------------------
@@ -492,6 +719,8 @@ export async function POST(req: Request) {
   try {
     if (update.callback_query) {
       await handleCallback(update, fromId, chatId)
+    } else if (update.message?.photo?.length) {
+      await handlePhoto(update, fromId, chatId, isAdmin)
     } else if (update.message?.text) {
       await handleMessage(update, fromId, chatId, isAdmin)
     } else {

@@ -1,6 +1,6 @@
 import type { Metadata, Viewport } from 'next'
 import { notFound } from 'next/navigation'
-import { Inter } from 'next/font/google'
+import { Inter, Space_Grotesk } from 'next/font/google'
 import { getMessages, setRequestLocale } from 'next-intl/server'
 import { NextIntlClientProvider } from 'next-intl'
 import { ThemeProvider } from 'next-themes'
@@ -19,6 +19,14 @@ const inter = Inter({
   subsets: ['latin'],
   variable: '--font-inter',
   display: 'swap',
+})
+
+/** Display face for headings — the de-slopped editorial Web3 look. */
+const spaceGrotesk = Space_Grotesk({
+  subsets: ['latin'],
+  variable: '--font-display',
+  display: 'swap',
+  weight: ['500', '600', '700'],
 })
 
 export const metadata: Metadata = {
@@ -69,7 +77,7 @@ export default async function LocaleLayout({
       dir={isRtlLocale(locale) ? 'rtl' : 'ltr'}
       suppressHydrationWarning
     >
-      <body className={`${inter.variable} antialiased`}>
+      <body className={`${inter.variable} ${spaceGrotesk.variable} antialiased`}>
         <NextIntlClientProvider locale={locale} messages={messages}>
           <ThemeProvider attribute="class" defaultTheme="dark" enableSystem={false} disableTransitionOnChange>
             <SessionProvider>

@@ -93,6 +93,19 @@ services:
       SOCIAL_VAZIMA_URL: ${SOCIAL_VAZIMA_URL:-}
       SOCIAL_TRINITY_URL: ${SOCIAL_TRINITY_URL:-}
       SOCIAL_GROBOFHIK_URL: ${SOCIAL_GROBOFHIK_URL:-}
+      # Merklane Ads: serving switch, top-up confirmation mode (empty = auto:
+      # blockbee when BLOCKBEE_API_KEY is set, else manual), deposit-address
+      # derivation seed for the manual fallback (see .env.example)
+      ADS_ENABLED: ${ADS_ENABLED:-true}
+      ADS_TOPUP_MODE: ${ADS_TOPUP_MODE:-}
+      ADS_TOPUP_SEED: ${ADS_TOPUP_SEED:-}
+      # BlockBee crypto payment processor: hosted deposit addresses for ad
+      # top-ups (IPN webhook: /api/webhooks/blockbee) + automated referral
+      # payouts. Empty = disabled (manual top-up fallback, withdrawals off).
+      BLOCKBEE_API_KEY: ${BLOCKBEE_API_KEY:-}
+      BLOCKBEE_IPN_SECRET: ${BLOCKBEE_IPN_SECRET:-}
+      BLOCKBEE_COINS: ${BLOCKBEE_COINS:-}
+      BLOCKBEE_MIN_PAYOUT_CENTS: ${BLOCKBEE_MIN_PAYOUT_CENTS:-2000}
     depends_on:
       db:
         condition: service_healthy

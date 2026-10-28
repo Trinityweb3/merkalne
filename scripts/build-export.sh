@@ -175,10 +175,20 @@ assert_file_contains "${ROOT}/.env.example" 'GOOGLE_AI_API_KEY=""' \
   ".env.example: Gemini key documented"
 assert_file_contains "${ROOT}/docker-compose.yml" 'GROQ_API_KEY' \
   "docker-compose: Groq key passed to the app service"
-assert_file_contains "${ROOT}/src/app/[locale]/about/page.tsx" "t('translationVia'" \
-  "about page: translation provider indicator rendered (i18n key translationVia)"
-assert_file_contains "${ROOT}/src/i18n/messages/en.ts" 'translationVia:' \
-  "i18n en.ts: translation provider indicator message present"
+# The About-page translation indicator was REMOVED (user request) — guard
+# against it creeping back in, along with its i18n keys.
+if grep -q "translationVia" "${ROOT}/src/app/[locale]/about/page.tsx" 2>/dev/null; then
+  echo "  [FAIL] about page still references translationVia (indicator was removed)"
+  fail=1
+else
+  echo "  [ok]   about page free of the translation indicator (removed)"
+fi
+if grep -q "translationVia" "${ROOT}/src/i18n/messages/en.ts" 2>/dev/null; then
+  echo "  [FAIL] en.ts still carries translationVia keys (removed feature)"
+  fail=1
+else
+  echo "  [ok]   dictionaries free of translationVia keys"
+fi
 [ -f "${ROOT}/scripts/test-llm-translation.ts" ] && echo "  [ok]   LLM provider chain test present (scripts/test-llm-translation.ts)" \
   || { echo "  [FAIL] scripts/test-llm-translation.ts missing"; fail=1; }
 if grep -q 'GROQ_API_KEY' "${ROOT}/worker/worker.ts" 2>/dev/null; then
@@ -249,6 +259,156 @@ else
 fi
 [ -f "${ROOT}/scripts/ui18n-codegen/check-messages.ts" ] && echo "  [ok]   i18n ICU message compile check present" \
   || { echo "  [FAIL] scripts/ui18n-codegen/check-messages.ts missing"; fail=1; }
+# --- Ads system + site CMS + de-slopped CSS (2026 build) ----------------------
+assert_file_contains "${ROOT}/prisma/schema.prisma" 'model SiteSetting' \
+  "schema: SiteSetting (Telegram CMS key-value store)"
+assert_file_contains "${ROOT}/prisma/schema.prisma" 'model AdCampaign' \
+  "schema: AdCampaign model"
+assert_file_contains "${ROOT}/prisma/schema.prisma" 'model AdImpression' \
+  "schema: AdImpression ledger"
+assert_file_contains "${ROOT}/prisma/schema.prisma" 'model CryptoTopUp' \
+  "schema: CryptoTopUp model"
+[ -f "${ROOT}/prisma/migrations/0006_site_cms_ads/migration.sql" ] && echo "  [ok]   migration 0006_site_cms_ads present" \
+  || { echo "  [FAIL] prisma/migrations/0006_site_cms_ads missing"; fail=1; }
+assert_file_contains "${ROOT}/src/lib/ads/auction.ts" 'pickWeightedRandom' \
+  "auction.ts: weighted-random (roulette wheel) selection"
+assert_file_contains "${ROOT}/src/lib/ads/auction.ts" 'balance: { gte: drawn.bidPerView }' \
+  "auction.ts: atomic conditional bill (no overdraft)"
+assert_file_contains "${ROOT}/src/lib/ads/auction.ts" "status: 'paused'" \
+  "auction.ts: drained campaigns auto-pause"
+assert_file_contains "${ROOT}/src/lib/ads/topup.ts" 'deriveDepositAddress' \
+  "topup.ts: deterministic deposit-address derivation (manual fallback)"
+assert_file_contains "${ROOT}/src/lib/ads/topup.ts" 'confirmTopUp' \
+  "topup.ts: idempotent confirmation + crediting"
+assert_file_contains "${ROOT}/src/lib/ads/topup.ts" "blockbeeConfigured() ? 'blockbee' : 'manual'" \
+  "topup.ts: AUTO mode resolution (blockbee when key set, else manual)"
+# --- BlockBee processor + referral system (2026 payments build) ----------------
+assert_file_contains "${ROOT}/prisma/schema.prisma" 'model PaymentLog' \
+  "schema: PaymentLog audit trail"
+assert_file_contains "${ROOT}/prisma/schema.prisma" 'model ReferralWithdrawal' \
+  "schema: ReferralWithdrawal ledger"
+assert_file_contains "${ROOT}/prisma/schema.prisma" 'referralBalance Int' \
+  "schema: User.referralBalance (US cents)"
+assert_file_contains "${ROOT}/prisma/schema.prisma" 'callbackNonce' \
+  "schema: CryptoTopUp per-intention webhook nonce"
+[ -f "${ROOT}/prisma/migrations/0007_blockbee_referrals/migration.sql" ] && echo "  [ok]   migration 0007_blockbee_referrals present" \
+  || { echo "  [FAIL] prisma/migrations/0007_blockbee_referrals missing"; fail=1; }
+[ -f "${ROOT}/src/lib/ads/blockbee.ts" ] && echo "  [ok]   BlockBee client present" \
+  || { echo "  [FAIL] src/lib/ads/blockbee.ts missing"; fail=1; }
+assert_file_contains "${ROOT}/src/lib/ads/blockbee.ts" 'verifyWebhookSignature' \
+  "blockbee.ts: dual-scheme webhook signature verification"
+assert_file_contains "${ROOT}/src/lib/ads/blockbee.ts" "return t === 'trx' || t.startsWith('trc20')" \
+  "blockbee.ts: TRON ban (policy, not overridable)"
+assert_file_contains "${ROOT}/src/lib/ads/blockbee.ts" 'createPaymentIntention' \
+  "blockbee.ts: payment intention via /create/"
+assert_file_contains "${ROOT}/src/lib/ads/blockbee.ts" 'payout/request/create' \
+  "blockbee.ts: payout chain endpoints"
+[ -f "${ROOT}/src/lib/referral.ts" ] && echo "  [ok]   referral lib present" \
+  || { echo "  [FAIL] src/lib/referral.ts missing"; fail=1; }
+assert_file_contains "${ROOT}/src/lib/referral.ts" 'REFERRAL_RATE = 0.5' \
+  "referral.ts: 50% commission rate"
+assert_file_contains "${ROOT}/src/lib/referral.ts" 'creditReferralCommission' \
+  "referral.ts: tx-scoped exactly-once commission credit"
+[ -f "${ROOT}/src/lib/payment-log.ts" ] && echo "  [ok]   PaymentLog writer present" \
+  || { echo "  [FAIL] src/lib/payment-log.ts missing"; fail=1; }
+[ -f "${ROOT}/src/app/api/webhooks/blockbee/route.ts" ] && echo "  [ok]   BlockBee webhook route present" \
+  || { echo "  [FAIL] src/app/api/webhooks/blockbee/route.ts missing"; fail=1; }
+assert_file_contains "${ROOT}/src/app/api/webhooks/blockbee/route.ts" "rateLimit(\`blockbee-wh:" \
+  "webhook: per-IP rate limit (spam hardening)"
+assert_file_contains "${ROOT}/src/app/api/webhooks/blockbee/route.ts" 'nonce_mismatch' \
+  "webhook: per-intention nonce validation"
+assert_file_contains "${ROOT}/src/app/api/webhooks/blockbee/route.ts" 'referralBalance: { gte:' \
+  "webhook: deduction guarded against negative balance"
+[ -f "${ROOT}/src/app/api/account/referral/withdraw/route.ts" ] && echo "  [ok]   referral withdraw route present" \
+  || { echo "  [FAIL] src/app/api/account/referral/withdraw/route.ts missing"; fail=1; }
+assert_file_contains "${ROOT}/src/app/api/account/referral/withdraw/route.ts" 'processPayout' \
+  "withdraw: BlockBee payout chain drive"
+assert_file_contains "${ROOT}/src/lib/env.ts" 'BLOCKBEE_IPN_SECRET' \
+  "env.ts: BlockBee variables validated"
+assert_file_contains "${ROOT}/.env.example" 'BLOCKBEE_API_KEY=""' \
+  ".env.example: BlockBee documented"
+assert_file_contains "${ROOT}/docker-compose.yml" 'BLOCKBEE_API_KEY: ${BLOCKBEE_API_KEY:-}' \
+  "compose: BlockBee env passed to the app"
+assert_file_contains "${ROOT}/src/components/site/profile-dashboard.tsx" 'ReferralTab' \
+  "profile dashboard: Referrals tab renders"
+assert_file_contains "${ROOT}/src/i18n/messages/ru.ts" 'topUpBlockbeeNote' \
+  "i18n: BlockBee top-up keys translated (ru spot-check)"
+assert_file_contains "${ROOT}/src/i18n/messages/ja.ts" 'topUpCoinNote' \
+  "i18n: coin-picker keys translated (ja spot-check)"
+[ -f "${ROOT}/scripts/test-blockbee-e2e.ts" ] && echo "  [ok]   BlockBee e2e suite present" \
+  || { echo "  [FAIL] scripts/test-blockbee-e2e.ts missing"; fail=1; }
+[ -f "${ROOT}/src/lib/site-settings.ts" ] && echo "  [ok]   site-settings lib present (CMS read cache)" \
+  || { echo "  [FAIL] src/lib/site-settings.ts missing"; fail=1; }
+[ -f "${ROOT}/src/components/site/ads/ad-slot.tsx" ] && echo "  [ok]   <AdSlot/> component present" \
+  || { echo "  [FAIL] src/components/site/ads/ad-slot.tsx missing"; fail=1; }
+assert_file_contains "${ROOT}/src/components/site/ads/ad-slot.tsx" 'rel="sponsored noopener noreferrer"' \
+  "AdSlot: rel=sponsored (never confused with editorial links)"
+[ -f "${ROOT}/src/components/site/ads/ads-dashboard.tsx" ] && echo "  [ok]   advertiser dashboard component present" \
+  || { echo "  [FAIL] src/components/site/ads/ads-dashboard.tsx missing"; fail=1; }
+assert_file_contains "${ROOT}/src/app/[locale]/page.tsx" 'slot="home_banner"' \
+  "home page: banner slot below the hero"
+assert_file_contains "${ROOT}/src/components/site/post-list-client.tsx" 'slot="feed"' \
+  "section pages: in-feed ad after the 3rd/6th post"
+assert_file_contains "${ROOT}/src/app/[locale]/[section]/[slug]/page.tsx" 'slot="article_bottom"' \
+  "article pages: native ad before the comments"
+assert_file_contains "${ROOT}/src/app/[locale]/ads/page.tsx" "redirect('/auth?mode=login&next=/ads')" \
+  "/ads dashboard: auth-gated like the profile cabinet"
+assert_file_contains "${ROOT}/src/app/api/ads/serve/route.ts" 'status: 204' \
+  "serve API: 204 when nothing eligible (no empty boxes)"
+[ -f "${ROOT}/src/app/api/ads/topups/[id]/simulate/route.ts" ] && echo "  [ok]   simulate (demo) top-up route present" \
+  || { echo "  [FAIL] ads topups simulate route missing"; fail=1; }
+[ -f "${ROOT}/src/app/api/admin/ads/topups/[id]/confirm/route.ts" ] && echo "  [ok]   admin manual-confirm route present" \
+  || { echo "  [FAIL] admin ads topups confirm route missing"; fail=1; }
+assert_file_contains "${ROOT}/src/lib/env.ts" 'ADS_TOPUP_MODE' \
+  "env.ts: ads top-up mode validated"
+assert_file_contains "${ROOT}/.env.example" 'ADS_ENABLED="true"' \
+  ".env.example: ads master switch documented"
+assert_file_contains "${ROOT}/.env.example" 'ADS_TOPUP_MODE=""' \
+  ".env.example: top-up mode documented (auto default)"
+assert_file_contains "${ROOT}/.env.example" 'ADS_TOPUP_SEED=""' \
+  ".env.example: deposit-address seed documented"
+assert_file_contains "${ROOT}/docker-compose.yml" 'ADS_TOPUP_MODE: ${ADS_TOPUP_MODE:-}' \
+  "docker-compose: ads env passthrough"
+# --- Telegram bot CMS (Manage team / Change logo) ------------------------------
+assert_file_contains "${ROOT}/src/app/api/webhooks/telegram-admin/route.ts" 'Manage team' \
+  "admin bot: 👥 Manage team menu"
+assert_file_contains "${ROOT}/src/app/api/webhooks/telegram-admin/route.ts" 'Change logo' \
+  "admin bot: 🖼 Change logo menu"
+assert_file_contains "${ROOT}/src/app/api/webhooks/telegram-admin/route.ts" 'handlePhoto' \
+  "admin bot: photo upload handler wired"
+assert_file_contains "${ROOT}/src/lib/bots/telegram.ts" 'telegramDownloadAsDataUrl' \
+  "telegram lib: file download → data URL (CMS uploads)"
+assert_file_contains "${ROOT}/src/app/[locale]/about/page.tsx" 'getSiteOverrides' \
+  "about page: dynamic team/logo from SiteSettings"
+assert_file_contains "${ROOT}/src/app/[locale]/about/page.tsx" 'site-logo' \
+  "about page: operator logo block"
+# --- De-slopped CSS (legacy kept as backup) -------------------------------------
+[ -f "${ROOT}/src/app/globals.legacy.css" ] && echo "  [ok]   globals.legacy.css kept as backup" \
+  || { echo "  [FAIL] src/app/globals.legacy.css missing (old design must stay in the repo)"; fail=1; }
+assert_file_contains "${ROOT}/src/app/globals.css" 'var(--font-display)' \
+  "globals.css: display font (Space Grotesk) wired into headings"
+assert_file_contains "${ROOT}/src/app/globals.css" '.ad-slot' \
+  "globals.css: sponsored-card styles present"
+assert_file_contains "${ROOT}/src/app/[locale]/layout.tsx" 'Space_Grotesk' \
+  "layout: Space Grotesk display face loaded"
+assert_file_contains "${ROOT}/docker/check-app-tree.sh" 'globals.legacy.css' \
+  "stale-merge guard: legacy stylesheet allow-listed"
+# --- i18n: ads/adSlot namespaces in every dictionary ----------------------------
+ads_i18n_ok=0
+for dict in "${ROOT}"/src/i18n/messages/*.ts; do
+  dict_name="$(basename "${dict}")"
+  if grep -q 'ads: {' "${dict}" && grep -q 'adSlot: {' "${dict}"; then
+    ads_i18n_ok=$((ads_i18n_ok + 1))
+  else
+    echo "  [FAIL] i18n ${dict_name}: ads/adSlot namespace missing"
+    fail=1
+  fi
+done
+[ "${ads_i18n_ok}" -eq 20 ] && echo "  [ok]   ads/adSlot namespaces present in all 20 dictionaries"
+[ -f "${ROOT}/scripts/test-ads-e2e.ts" ] && echo "  [ok]   ads e2e suite present" \
+  || { echo "  [FAIL] scripts/test-ads-e2e.ts missing"; fail=1; }
+[ -f "${ROOT}/scripts/test-ads-auction.ts" ] && echo "  [ok]   auction unit test present" \
+  || { echo "  [FAIL] scripts/test-ads-auction.ts missing"; fail=1; }
 # Run the same stale-merge guard the Docker build runs — the sandbox tree
 # itself must be clean before it is bundled.
 if sh "${ROOT}/docker/check-app-tree.sh" >/dev/null 2>&1; then
@@ -370,8 +530,13 @@ assert_file_contains "${VERIFY_DIR}/merklane/.env.example" 'GOOGLE_AI_API_KEY=""
   "archive: .env.example documents GOOGLE_AI_API_KEY"
 assert_file_contains "${VERIFY_DIR}/merklane/docker-compose.yml" 'GROQ_API_KEY' \
   "archive: compose passes the LLM provider keys"
-assert_file_contains "${VERIFY_DIR}/merklane/src/app/[locale]/about/page.tsx" "t('translationVia'" \
-  "archive: About page carries the provider indicator (i18n)"
+if grep -q "translationVia" "${VERIFY_DIR}/merklane/src/app/[locale]/about/page.tsx" 2>/dev/null \
+  || grep -q "translationVia" "${VERIFY_DIR}/merklane/src/i18n/messages/en.ts" 2>/dev/null; then
+  echo "  [FAIL] archive: translation indicator still present (removed feature)"
+  archive_fail=1
+else
+  echo "  [ok]   archive: translation indicator fully removed"
+fi
 [ -f "${VERIFY_DIR}/merklane/scripts/test-llm-translation.ts" ] && echo "  [ok]   archive: LLM provider chain test present" \
   || { echo "  [FAIL] archive: scripts/test-llm-translation.ts MISSING"; archive_fail=1; }
 [ -f "${VERIFY_DIR}/merklane/config/translation-glossary.json" ] && echo "  [ok]   archive: active glossary config present" \
@@ -431,6 +596,51 @@ if grep -rq 'McQween' "${VERIFY_DIR}/merklane/src" 2>/dev/null; then
 else
   echo "  [ok]   archive: no 'McQween' placeholder (team is Vazima/Trinity/Grobofhik)"
 fi
+# --- Ads system + site CMS + de-slopped CSS — IN-ARCHIVE ------------------------
+assert_file_contains "${VERIFY_DIR}/merklane/src/lib/ads/auction.ts" 'pickWeightedRandom' \
+  "archive: weighted-random auction engine ships"
+assert_file_contains "${VERIFY_DIR}/merklane/src/lib/ads/topup.ts" 'deriveDepositAddress' \
+  "archive: crypto top-up derivation ships"
+[ -f "${VERIFY_DIR}/merklane/src/components/site/ads/ad-slot.tsx" ] && echo "  [ok]   archive: <AdSlot/> component ships" \
+  || { echo "  [FAIL] archive: ad-slot.tsx MISSING"; archive_fail=1; }
+[ -f "${VERIFY_DIR}/merklane/src/components/site/ads/ads-dashboard.tsx" ] && echo "  [ok]   archive: advertiser dashboard ships" \
+  || { echo "  [FAIL] archive: ads-dashboard.tsx MISSING"; archive_fail=1; }
+[ -f "${VERIFY_DIR}/merklane/prisma/migrations/0006_site_cms_ads/migration.sql" ] && echo "  [ok]   archive: migration 0006 ships" \
+  || { echo "  [FAIL] archive: prisma/migrations/0006_site_cms_ads MISSING"; archive_fail=1; }
+assert_file_contains "${VERIFY_DIR}/merklane/.env.example" 'BLOCKBEE_API_KEY=""' \
+  "archive: .env.example documents the BlockBee vars"
+assert_file_contains "${VERIFY_DIR}/merklane/docker-compose.yml" 'ADS_TOPUP_MODE' \
+  "archive: compose passes the ads env"
+assert_file_contains "${VERIFY_DIR}/merklane/docker-compose.yml" 'BLOCKBEE_IPN_SECRET: ${BLOCKBEE_IPN_SECRET:-}' \
+  "archive: compose passes the BlockBee env"
+[ -f "${VERIFY_DIR}/merklane/prisma/migrations/0007_blockbee_referrals/migration.sql" ] && echo "  [ok]   archive: migration 0007 ships" \
+  || { echo "  [FAIL] archive: prisma/migrations/0007_blockbee_referrals MISSING"; archive_fail=1; }
+[ -f "${VERIFY_DIR}/merklane/src/lib/ads/blockbee.ts" ] && echo "  [ok]   archive: BlockBee client ships" \
+  || { echo "  [FAIL] archive: src/lib/ads/blockbee.ts MISSING"; archive_fail=1; }
+assert_file_contains "${VERIFY_DIR}/merklane/src/lib/ads/blockbee.ts" 'verifyWebhookSignature' \
+  "archive: webhook signature verification ships"
+[ -f "${VERIFY_DIR}/merklane/src/app/api/webhooks/blockbee/route.ts" ] && echo "  [ok]   archive: BlockBee webhook route ships" \
+  || { echo "  [FAIL] archive: webhooks/blockbee/route.ts MISSING"; archive_fail=1; }
+[ -f "${VERIFY_DIR}/merklane/src/lib/referral.ts" ] && echo "  [ok]   archive: referral lib ships" \
+  || { echo "  [FAIL] archive: src/lib/referral.ts MISSING"; archive_fail=1; }
+assert_file_contains "${VERIFY_DIR}/merklane/src/lib/referral.ts" 'REFERRAL_RATE = 0.5' \
+  "archive: 50% referral commission ships"
+[ -f "${VERIFY_DIR}/merklane/scripts/test-blockbee-e2e.ts" ] && echo "  [ok]   archive: BlockBee e2e suite ships" \
+  || { echo "  [FAIL] archive: scripts/test-blockbee-e2e.ts MISSING"; archive_fail=1; }
+[ -f "${VERIFY_DIR}/merklane/scripts/run-blockbee-e2e.sh" ] && echo "  [ok]   archive: BlockBee e2e runner ships" \
+  || { echo "  [FAIL] archive: scripts/run-blockbee-e2e.sh MISSING"; archive_fail=1; }
+assert_file_contains "${VERIFY_DIR}/merklane/src/app/api/webhooks/telegram-admin/route.ts" 'Manage team' \
+  "archive: admin bot CMS menus ship"
+[ -f "${VERIFY_DIR}/merklane/src/app/globals.legacy.css" ] && echo "  [ok]   archive: legacy stylesheet backup ships" \
+  || { echo "  [FAIL] archive: globals.legacy.css MISSING"; archive_fail=1; }
+assert_file_contains "${VERIFY_DIR}/merklane/src/app/globals.css" 'var(--font-display)' \
+  "archive: de-slopped stylesheet ships (display font)"
+assert_file_contains "${VERIFY_DIR}/merklane/src/i18n/messages/ru.ts" 'adSlot: {' \
+  "archive: ru dictionary carries the ads namespaces"
+assert_file_contains "${VERIFY_DIR}/merklane/src/i18n/messages/ja.ts" 'adSlot: {' \
+  "archive: ja dictionary carries the ads namespaces"
+[ -f "${VERIFY_DIR}/merklane/scripts/test-ads-e2e.ts" ] && echo "  [ok]   archive: ads e2e suite ships" \
+  || { echo "  [FAIL] archive: scripts/test-ads-e2e.ts MISSING"; archive_fail=1; }
 # Cross-check: every file listed in the archive MANIFEST exists after extraction
 MANIFEST_COUNT="$(wc -l < "${VERIFY_DIR}/merklane/MANIFEST" | tr -d ' ')"
 MISSING_IN_ARCHIVE="$(cd "${VERIFY_DIR}/merklane" && while IFS= read -r f; do [ -f "${f}" ] || echo "${f}"; done < MANIFEST | head -5)"

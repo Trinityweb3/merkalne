@@ -16,11 +16,12 @@
 #
 # Allowed top-level entries in src/app (update this list ONLY when the layout
 # legitimately changes — e.g. a new app-level convention file):
-#   [locale]/   every page + the root layout (i18n)
-#   api/        route handlers (locale-independent)
-#   globals.css global stylesheet
-#   robots.ts   robots.txt generator
-#   sitemap.ts  sitemap generator
+#   [locale]/           every page + the root layout (i18n)
+#   api/                route handlers (locale-independent)
+#   globals.css         global stylesheet (the current de-slopped design)
+#   globals.legacy.css  the pre-redesign stylesheet, kept as a backup
+#   robots.ts           robots.txt generator
+#   sitemap.ts          sitemap generator
 # ---------------------------------------------------------------------------
 set -eu
 
@@ -43,7 +44,7 @@ cd "${app_dir}"
 stale=""
 for entry in *; do
   case "${entry}" in
-    '[locale]'|api|globals.css|robots.ts|sitemap.ts) ;;
+    '[locale]'|api|globals.css|globals.legacy.css|robots.ts|sitemap.ts) ;;
     *) stale="${stale}  ${entry}\n" ;;
   esac
 done

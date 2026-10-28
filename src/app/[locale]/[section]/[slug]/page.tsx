@@ -12,6 +12,7 @@ import { ArticleBody } from '@/components/site/article-body'
 import { PostActions } from '@/components/site/post-actions'
 import { Comments } from '@/components/site/comments'
 import { SupportBanner } from '@/components/site/support-banner'
+import { AdSlot } from '@/components/site/ads/ad-slot'
 import { formatDateTime, formatDate } from '@/lib/utils'
 import {
   addedAgoLabel,
@@ -164,6 +165,10 @@ export default async function PostDetailPage({ params }: PageProps) {
               reaction?.value === 'like' || reaction?.value === 'dislike' ? reaction.value : null
             }
           />
+
+          {/* Native sponsored card at the end of the material — right before
+              the comments, visually distinct from editorial content. */}
+          <AdSlot slot="article_bottom" variant="article" />
 
           <Comments slug={post.slug} initialCount={commentCount} />
         </article>

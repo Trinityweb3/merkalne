@@ -169,9 +169,83 @@ async function main() {
 
   await post(msg('/cancel'))
 
+  // -------------------------------------------------------------------------
+  console.log('— site CMS: team bios, avatars, logo —')
+  // Menus
+  await post(msg('/start'))
+  const teamMenu = await post(cbq('team'))
+  ok('👥 Manage team opens the team menu', teamMenu.status === 200 && teamMenu.body?.data?.handled === true)
+  ok('team state cleared (menu only)', (await stateOf()) === null)
+
+  const memberMenu = await post(cbq('member:vazima'))
+  ok('member submenu opens', memberMenu.body?.data?.handled === true)
+
+  // Bio flow: prompt → text → SiteSetting row + state cleared
+  await post(cbq('bio:trinity'))
+  const bioState = await stateOf()
+  ok(
+    'bio prompt sets cms state (kind bio, member trinity)',
+    bioState?.step === 'cms' && (bioState?.draft?.cms as any)?.kind === 'bio' && (bioState?.draft?.cms as any)?.member === 'trinity',
+    JSON.stringify(bioState?.draft),
+  )
+
+  const tooLong = await post(msg('x'.repeat(401)))
+  ok('bio over 400 chars rejected (state kept)', (await stateOf())?.step === 'cms')
+
+  const bio = await post(msg('Trinity writes the Merklane front-end and dreams in TypeScript.'))
+  ok('bio accepted', bio.body?.data?.handled === true)
+  const savedBio = await db.siteSetting.findUnique({ where: { key: 'team_trinity_bio' } })
+  ok('team_trinity_bio persisted in SiteSetting', savedBio?.value === 'Trinity writes the Merklane front-end and dreams in TypeScript.', JSON.stringify(savedBio?.value?.slice(0, 40)))
+  ok('bio state cleared after save', (await stateOf()) === null)
+
+  // Bio text while in cms mode must NOT be treated as a job paste
+  await db.post.deleteMany({ where: { title: 'Company: this is not a job' } })
+  await post(cbq('bio:vazima'))
+  await post(msg('Company: this is not a job'))
+  const notAJob = await db.post.findFirst({ where: { title: { contains: 'not a job' } } })
+  ok('bio capture does not create a post', notAJob === null)
+
+  // Avatar / logo photo flows: without a bot token the Telegram download
+  // fails gracefully — state preserved, admin can retry.
+  await post(cbq('avatar:grobofhik'))
+  const avatarState = await stateOf()
+  ok(
+    'avatar prompt sets cms state (kind avatar, member grobofhik)',
+    avatarState?.step === 'cms' && (avatarState?.draft?.cms as any)?.kind === 'avatar',
+    JSON.stringify(avatarState?.draft),
+  )
+
+  const photoUpdate = {
+    update_id: uid++,
+    message: {
+      message_id: uid,
+      from: { id: ADMIN, first_name: 'Admin' },
+      chat: { id: ADMIN, type: 'private' },
+      date: Math.floor(Date.now() / 1000),
+      photo: [{ file_id: 'small', file_unique_id: 's', width: 160, height: 160 }, { file_id: 'big', file_unique_id: 'b', width: 1280, height: 1280, file_size: 123_456 }],
+    },
+  }
+  const photoResp = await post(photoUpdate)
+  ok('photo update handled (no crash)', photoResp.status === 200 && photoResp.body?.data?.handled === true)
+  ok('avatar state kept after failed download (retryable)', (await stateOf())?.step === 'cms')
+
+  await post(msg('/cancel'))
+  ok('cancel exits the cms flow', (await stateOf()) === null)
+
+  const logoState = await post(cbq('logo'))
+  ok('logo prompt sets cms state (kind logo)', (await stateOf())?.draft != null && ((await stateOf())?.draft?.cms as any)?.kind === 'logo')
+
+  // Photo outside a cms flow → polite hint, not an error
+  await post(msg('/cancel'))
+  const strayPhoto = await post(photoUpdate)
+  ok('stray photo (no flow) handled politely', strayPhoto.status === 200 && strayPhoto.body?.data?.handled === true)
+
+  await post(msg('/cancel'))
+
   console.log(`\n${failures === 0 ? 'ALL PASS' : failures + ' FAILURES'}`)
   // cleanup
   await db.post.deleteMany({ where: { title: { in: ['Senior Wizard Test Engineer', 'Power Command Post'] } } })
+  await db.siteSetting.deleteMany({ where: { key: { in: ['team_trinity_bio', 'team_vazima_bio', 'team_grobofhik_avatar', 'current_logo_url'] } } })
   await db.user.deleteMany({ where: { email: 'admin-bot-e2e@test.local' } })
   await db.telegramAdminState.deleteMany({})
   await db.$disconnect()

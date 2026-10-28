@@ -10,6 +10,11 @@ cd /home/z/my-project
 PORT=3100
 LOG=/tmp/admin-bot-dev.log
 
+# .env for this run: the webhook secret + admin id the test suite uses
+# (self-contained — does not depend on the developer's local .env).
+cp .env /tmp/env.backup.admin-bot
+printf 'TELEGRAM_ADMIN_WEBHOOK_SECRET="test_admin_secret_0123456789ab"\nTELEGRAM_ADMIN_USER_IDS="999000111"\n' >> .env
+
 echo "[runner] starting dev server on :${PORT}…"
 rm -f "${LOG}" dev.log
 bunx next dev -p "${PORT}" > "${LOG}" 2>&1 &
@@ -38,6 +43,7 @@ echo "[runner] stopping dev server…"
 kill "${SERVER_PID}" 2>/dev/null
 pkill -f "next dev -p ${PORT}" 2>/dev/null
 sleep 1
+mv /tmp/env.backup.admin-bot .env
 
 echo "[runner] test exit: ${TEST_EXIT}"
 exit "${TEST_EXIT}"

@@ -16,6 +16,7 @@
  * can be changed without a rebuild.
  */
 import { env } from './env'
+import type { TeamMemberKey } from './site-settings'
 
 // ---------------------------------------------------------------------------
 // Team
@@ -27,6 +28,11 @@ export type TeamRoleKey = 'roleCeo' | 'roleProgrammer'
 export interface TeamMember {
   /** Display name. */
   name: string
+  /**
+   * SiteSetting key for the Telegram-bot-managed overrides of this member
+   * (team_<key>_bio / team_<key>_avatar) — see src/lib/site-settings.ts.
+   */
+  settingKey: TeamMemberKey
   /**
    * Role label — an i18n key (namespace `about`), so the role renders in the
    * visitor's language. Add new roles to every dictionary file first.
@@ -51,22 +57,26 @@ export interface TeamMember {
 
 /**
  * The Merklane team. Social links come from env (see the header comment);
- * avatars and bios are placeholders for now — fill `imageUrl`/`bio` here
- * when ready.
+ * avatars and bios are placeholders by default — the operator overrides
+ * both at runtime through the Telegram admin bot (Manage team), which
+ * writes SiteSetting rows the /about page merges over these defaults.
  */
 export const TEAM_MEMBERS: TeamMember[] = [
   {
     name: 'Vazima',
+    settingKey: 'vazima',
     roleKey: 'roleCeo',
     socialUrl: env.SOCIAL_VAZIMA_URL,
   },
   {
     name: 'Trinity',
+    settingKey: 'trinity',
     roleKey: 'roleProgrammer',
     socialUrl: env.SOCIAL_TRINITY_URL,
   },
   {
     name: 'Grobofhik',
+    settingKey: 'grobofhik',
     roleKey: 'roleProgrammer',
     socialUrl: env.SOCIAL_GROBOFHIK_URL,
   },

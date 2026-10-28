@@ -40,6 +40,17 @@ model User {
   bio           String?
   /// Comma separated public links (validated URLs)
   links         String?
+  /// Shareable referral code (?ref=CODE on the auth page) — null only on
+  /// legacy rows created before the referral launch (backfilled lazily on
+  /// first read, see src/lib/referral.ts)
+  referralCode  String?   @unique
+  /// Who referred this user (set once at registration, never mutated).
+  /// Self-referral is impossible: the code owner already exists when the
+  /// referred account is created, and referredBy is write-once.
+  referredById  String?
+  /// Referral commission balance in US cents — 50% of every confirmed
+  /// top-up made by referred users. Withdrawn via BlockBee payouts.
+  referralBalance Int     @default(0)
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
@@ -50,6 +61,11 @@ model User {
   reactions      Reaction[]
   bookmarks      Bookmark[]
   telegramLink   TelegramLink?
+  adCampaigns    AdCampaign[]
+  adTopUps       CryptoTopUp[]
+  referredBy     User?                @relation("UserReferrals", fields: [referredById], references: [id], onDelete: SetNull)
+  referrals      User[]               @relation("UserReferrals")
+  withdrawals    ReferralWithdrawal[]
 
   @@index([email])
   @@index([plan])
@@ -370,4 +386,207 @@ model DailyStats {
   updatedAt DateTime @updatedAt
 
   @@index([date])
+}
+
+// ---------------------------------------------------------------------------
+// Site CMS (Telegram-admin-bot-managed content: logo, team avatars & bios)
+// ---------------------------------------------------------------------------
+
+/**
+ * Key-value store for operator-managed site content, written through the
+ * Telegram admin bot (Manage Team / Change Logo flows). Values are plain
+ * strings; uploaded images are stored as data URLs (base64) so they survive
+ * container recreation without baking files into the Docker image.
+ *
+ * Keys in use (see src/lib/site-settings.ts — the typed accessor):
+ *   current_logo_url      site logo shown on /about (data URL)
+ *   team_<member>_avatar  uploaded avatar for team member <member>
+ *   team_<member>_bio     bio text for team member <member>
+ * where <member> ∈ { vazima, trinity, grobofhik }.
+ */
+model SiteSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// Merklane Ads — campaigns, weighted auction, impressions, crypto top-ups
+// ---------------------------------------------------------------------------
+
+/**
+ * One advertiser campaign. Money is stored in US CENTS (Int) so the same
+ * definition works on PostgreSQL and the SQLite preview without Decimal
+ * columns: balance = remaining budget, bidPerView = price (and auction
+ * weight) per SERVED impression.
+ *
+ * status: "active" (eligible for the auction) | "paused" (advertiser pause
+ * OR balance drained to 0 — resume after a top-up) | "ended" (operator stop).
+ */
+model AdCampaign {
+  id           String   @id @default(cuid())
+  advertiserId String
+  /// Card headline (plain text, ≤ 80 chars)
+  title        String
+  /// Card body copy (plain text, ≤ 200 chars)
+  body         String
+  /// Destination URL opened on click (https only)
+  ctaUrl       String
+  /// Optional button label override (default from the i18n dictionary)
+  ctaLabel     String?
+  /// Remaining budget in US cents; every served impression decrements this
+  balance      Int      @default(0)
+  /// Price per served impression in US cents — doubles as the auction weight
+  bidPerView   Int      @default(1)
+  status       String   @default("active")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  advertiser  User            @relation(fields: [advertiserId], references: [id], onDelete: Cascade)
+  impressions AdImpression[]
+  topUps      CryptoTopUp[]
+
+  @@index([status, balance])
+  @@index([advertiserId, createdAt])
+}
+
+/**
+ * Ledger row per billed event. type: "view" (ad served into a slot — the
+ * billable event that decrements the campaign balance) | "click" (the
+ * visitor followed the call-to-action — never billed twice for the same
+ * impression).
+ */
+model AdImpression {
+  id         String   @id @default(cuid())
+  campaignId String
+  type       String
+  createdAt  DateTime @default(now())
+
+  campaign AdCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@index([campaignId, type, createdAt])
+  @@index([createdAt])
+}
+
+/**
+ * One crypto deposit intention. `walletAddress` is the address the customer
+ * pays to: issued by BlockBee (provider="blockbee", paid via the IPN webhook
+ * at /api/webhooks/blockbee) or derived from the mock HD wallet in the
+ * manual/simulate fallback modes (provider="manual", confirmed by an admin
+ * or — demos only — the advertiser themselves).
+ *
+ * status: "pending" | "confirmed" | "expired".
+ */
+model CryptoTopUp {
+  id             String    @id @default(cuid())
+  advertiserId   String
+  /// Target campaign for the credit (null → advertiser's newest campaign)
+  campaignId     String?
+  walletAddress  String
+  /// Expected amount in US cents
+  amountExpected Int
+  /// Confirmed received amount in US cents (0 until confirmed)
+  amountReceived Int       @default(0)
+  status         String    @default("pending")
+  /// "blockbee" | "manual" — which provider issued the deposit address
+  provider       String    @default("manual")
+  /// BlockBee coin ticker for this intention (e.g. polygon_usdt) — manual mode: null
+  coin           String?
+  /// Unguessable per-intention nonce embedded in the BlockBee callback URL
+  /// and verified on every IPN (binds a webhook to exactly this intention)
+  callbackNonce  String?
+  /// BlockBee payment UUID — the cross-retry dedupe key echoed by every IPN
+  uuid           String?   @unique
+  /// On-chain transaction hash of the incoming payment (txid_in)
+  txHash         String?
+  /// Crypto amount paid, as received (string — never trust floats with money)
+  paidCoinAmount String?
+  /// Coin USD price at payment time (BlockBee `price` field), string
+  coinPriceUsd   String?
+  createdAt      DateTime  @default(now())
+  confirmedAt    DateTime?
+
+  advertiser User        @relation(fields: [advertiserId], references: [id], onDelete: Cascade)
+  campaign   AdCampaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+
+  @@index([advertiserId, status])
+  @@index([status, createdAt])
+  @@index([provider, status])
+}
+
+/**
+ * Append-only audit trail for every payment event: BlockBee IPNs (accepted
+ * AND rejected), payout webhook transitions, admin/simulate confirms,
+ * referral commissions and withdrawal requests. `externalId` carries the
+ * BlockBee payment uuid / payout id / on-chain tx hash so an operator can
+ * cross-reference any ledger movement with the processor's console.
+ */
+model PaymentLog {
+  id          String   @id @default(cuid())
+  /// "blockbee_ipn" | "blockbee_payout" | "admin_confirm" |
+  /// "simulate_confirm" | "referral_withdraw" | "referral_commission"
+  source      String
+  /// What happened: "received" | "rejected" | "credited" | "pending" |
+  /// "done" | "failed" | "commission_credited" | …
+  event       String
+  ok          Boolean  @default(true)
+  /// BlockBee payment uuid / payout id / tx hash
+  externalId  String?
+  /// CryptoTopUp.id or ReferralWithdrawal.id this event belongs to
+  referenceId String?
+  userId      String?
+  amountCents Int?
+  /// Sanitised payload snapshot (no secrets, truncated)
+  detail      Json?
+  createdAt   DateTime @default(now())
+
+  @@index([source, createdAt])
+  @@index([referenceId])
+  @@index([externalId])
+}
+
+/**
+ * One referral-commission withdrawal. The user requests a payout of part of
+ * their referralBalance; the funds are sent through the BlockBee payout
+ * chain (request → create → process) to the user's own crypto address.
+ *
+ * IMPORTANT: referralBalance is deducted only when BlockBee confirms the
+ * payout (status "done" via the payout webhook) — a failed/expired payout
+ * never takes the user's balance. While a withdrawal is pending/processing
+ * the user cannot start a second one (single-active-withdrawal guard).
+ *
+ * status: "pending" (row created, BlockBee chain not yet complete) |
+ * "processing" (broadcast accepted, awaiting on-chain settlement) |
+ * "done" (confirmed on-chain — balance deducted) | "failed" (chain/API
+ * error, nothing was sent) | "expired" (settlement dropped, nothing was
+ * sent) | "underfunded" (payout settled but the balance changed underneath
+ * — operator must resolve manually; should never happen).
+ */
+model ReferralWithdrawal {
+  id              String    @id @default(cuid())
+  userId          String
+  /// Requested amount in US cents (what is deducted from referralBalance)
+  amountCents     Int
+  /// BlockBee ticker the payout is sent in (e.g. polygon_usdt)
+  coin            String
+  /// Destination address provided by the user
+  address         String
+  /// Crypto amount sent (converted from USD at request time, string)
+  coinAmount      String?
+  /// BlockBee payout REQUEST id (payout/request/create)
+  payoutRequestId String?
+  /// BlockBee payout id (payout/create) — the processable id echoed by the
+  /// payout webhook
+  payoutId        String?   @unique
+  status          String    @default("pending")
+  error           String?
+  txHash          String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  completedAt     DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+  @@index([status, createdAt])
 }

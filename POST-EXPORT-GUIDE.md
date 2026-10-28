@@ -224,6 +224,13 @@ unconfigured optional features (OAuth buttons, bots) instead of failing silently
 | 13d | `SOCIAL_VAZIMA_URL` | `https://t.me/…` or any profile URL | Vazima (CEO) team card on `/about` | No — empty = card renders without a link |
 | 13e | `SOCIAL_TRINITY_URL` | any profile URL | Trinity (Programmer) team card on `/about` | No |
 | 13f | `SOCIAL_GROBOFHIK_URL` | any profile URL | Grobofhik (Programmer) team card on `/about` | No |
+| 13g | `ADS_ENABLED` | `true` / `false` | Master switch for ad serving (`false` hides every ad slot) | No (default `true`) |
+| 13h | `ADS_TOPUP_MODE` | *(empty)* / `blockbee` / `manual` / `simulate` | How a crypto top-up is confirmed. Empty (recommended) = AUTO: `blockbee` when `BLOCKBEE_API_KEY` is set, otherwise `manual` (an admin confirms). `simulate` = the advertiser self-confirms — **demos only, never on a public site** | No (default: auto) |
+| 13i | `ADS_TOPUP_SEED` | `openssl rand -hex 32` | Seed for the deterministic deposit-address derivation (manual/simulate fallback modes only) | No — but SET IT if you use manual mode in production |
+| 13j | `BLOCKBEE_API_KEY` | key from the BlockBee dashboard | Enables the [BlockBee](https://blockbee.io) payment processor: hosted deposit addresses for ad top-ups (AML-screened, ~0.25–1% fees) and automated referral-payout withdrawals. In the dashboard also set your payout wallet address and the **payout webhook URL** (`https://<your-domain>/api/webhooks/blockbee`, method POST or GET) | No — empty = processor off (manual top-up fallback, withdrawals show "not enabled yet") |
+| 13k | `BLOCKBEE_IPN_SECRET` | `openssl rand -hex 32` | Shared secret for the webhook HMAC path: the `token` param on each webhook must equal HMAC-SHA256(secret, remaining query string). BlockBee's RSA scheme (`x-ca-signature` header, verified against the processor's public key from `https://api.blockbee.io/pubkey/`) is checked as well — a webhook is accepted when EITHER verifies | No — but SET IT (adds an independent verification layer) |
+| 13l | `BLOCKBEE_COINS` | e.g. `polygon_usdt,polygon_usdc,sol` | Allowlist of BlockBee coin tickers offered for top-ups and payouts. Empty = the default set (USDT/USDC on Polygon, BSC and Arbitrum + SOL, BNB, POL). **TRON tickers are always rejected** (high fraud rate — policy, not overridable) | No |
+| 13m | `BLOCKBEE_MIN_PAYOUT_CENTS` | e.g. `2000` (= $20.00) | Minimum referral withdrawal in US cents | No (default 2000) |
 
 > **Port note (`DB_HOST_PORT`)** — the compose file publishes the bundled PostgreSQL on `127.0.0.1:5433` by default (`127.0.0.1:${DB_HOST_PORT:-5433}:5432`). The 5433 default exists because a native PostgreSQL on the host typically already owns 5432 — starting the stack then aborts with `failed to bind host port … address already in use`. The container-internal port is always 5432 and the app connects as `db:5432` over the internal network, so this mapping only affects host-side access (`psql -h 127.0.0.1 -p 5433 -U merklane`). Override in `.env` (`DB_HOST_PORT=5432`) if your host port is free, or delete the `ports:` block for hardened deployments.
 
@@ -340,6 +347,18 @@ per language in the database. The active provider is shown on `/about`
 > - Already-cached translations keep the glossary as it was when they were
 >   made; to force a re-translate after big glossary edits:
 >   `docker compose exec db psql -U merklane -d merklane -c "UPDATE \"Post\" SET translations = '{}'"`
+
+### Merklane Ads & the site CMS (Telegram)
+
+Two operator features ship in this build:
+
+**Ads.** `/ads` is the advertiser dashboard (sign in required): create a campaign (it starts PAUSED with balance 0 — no free impressions), top up with crypto, then resume. Every served impression deducts the bid from the balance (weighted-random auction: a 2¢ bid wins twice the share of a 1¢ bid) and a drained campaign auto-pauses.
+
+With `BLOCKBEE_API_KEY` set (the production path) the top-up modal shows a **coin picker** (stablecoins + majors on Solana, Polygon, BSC and Arbitrum — TRON is banned by policy), then a **BlockBee-hosted deposit address**. The IPN webhook at `/api/webhooks/blockbee` verifies the signature (RSA `x-ca-signature` and/or the HMAC `token`), matches `order_id` + per-intention nonce against the pending intention, and credits the campaign exactly once — the dashboard's status polling flips to "confirmed" automatically. Without a processor key the flow falls back to `manual` mode: a locally derived mock address is shown and an ADMIN confirms deposits after checking the wallet (`POST /api/admin/ads/topups/<id>/confirm`). For local demos set `ADS_TOPUP_MODE=simulate` and the advertiser sees a "Simulate payment" button instead.
+
+**Referrals.** Every account gets a shareable code — the profile's **Referrals** tab shows the link (`/auth?mode=register&ref=CODE`). When an invited user's top-up is confirmed, **50% of what they paid** lands in the inviter's referral balance (exactly once — same transaction as the credit). The same tab has the **withdraw** form: pick a coin, paste your address, and the payout is sent on-chain through BlockBee; your balance is deducted only after the transfer confirms (failed payouts never take the money). The e2e suite covers the whole chain against a mock processor: `bash scripts/run-blockbee-e2e.sh` (58 checks).
+
+**Site CMS.** In the Telegram admin bot tap **👥 Manage team** (pick a member → send a text for the bio, or a photo for the avatar) or **🖼 Change logo** (send the photo). Uploads are stored in the database and appear on `/about` within a minute (60 s cache). Nothing else to configure.
 
 ### The 30-second minimal setup
 

@@ -3,7 +3,7 @@ import { getTranslations } from 'next-intl/server'
 import { Link } from '@/i18n/navigation'
 import { Compass, FileText, Globe, ShieldCheck, Sparkles, Users, Video } from 'lucide-react'
 import { getLatestDailyStats } from '@/lib/stats/aggregate'
-import { activeTranslationProvider } from '@/lib/translate'
+import { getSiteOverrides, type TeamMemberOverride } from '@/lib/site-settings'
 import { AboutStats } from '@/components/site/about-stats'
 import { YoutubeEmbed } from '@/components/site/youtube-embed'
 import { Button } from '@/components/ui/button'
@@ -65,25 +65,30 @@ function TeamAvatar({ name, imageUrl }: { name: string; imageUrl?: string }) {
 }
 
 /**
- * One team card. When the member has a social link the WHOLE card becomes
- * the link (opens in a new tab; the aria-label announces it); without a
- * link it renders as a plain, non-clickable card.
+ * One team card. The avatar/bio shown are the RUNTIME values: the Telegram
+ * admin bot's upload (SiteSetting override) wins over the static placeholder
+ * in about-content.ts, which wins over the localized placeholder text. When
+ * the member has a social link the WHOLE card becomes the link (opens in a
+ * new tab; the aria-label announces it); without a link it renders as a
+ * plain, non-clickable card.
  */
 function TeamCard({
   member,
   role,
   bio,
+  imageUrl,
   openLabel,
 }: {
   member: TeamMember
   role: string
   bio: string
+  imageUrl?: string
   openLabel: string
 }) {
   const body = (
     <>
       <div className="row" style={{ gap: 14, alignItems: 'center' }}>
-        <TeamAvatar name={member.name} imageUrl={member.imageUrl} />
+        <TeamAvatar name={member.name} imageUrl={imageUrl} />
         <div style={{ minWidth: 0 }}>
           <h3>{member.name}</h3>
           <p className="team-role">{role}</p>
@@ -115,7 +120,11 @@ export default async function AboutPage({ params }: PageProps) {
   const { locale } = await params
   const t = await getTranslations({ locale, namespace: 'about' })
   const latest = await getLatestDailyStats()
-  const translationProvider = activeTranslationProvider()
+  // Operator-managed content (Telegram admin bot uploads): site logo + team
+  // avatar/bio overrides. 60 s cache — safe to read on every request.
+  const overrides = await getSiteOverrides()
+  const teamOverride = (key: TeamMember['settingKey']): TeamMemberOverride =>
+    overrides.team[key] ?? {}
 
   return (
     // Inline fallback mirrors .container (globals.css): even if the stylesheet
@@ -127,6 +136,17 @@ export default async function AboutPage({ params }: PageProps) {
     >
       <div className="page-head">
         <div>
+          {/* Operator logo (Telegram bot "Change logo") — hidden until the
+              first upload lands, so the page stays honest by default. */}
+          {overrides.logo ? (
+            <img
+              className="site-logo"
+              src={overrides.logo}
+              alt="Merklane"
+              width={160}
+              height={160}
+            />
+          ) : null}
           <h1>{t('title')}</h1>
           <p>{t('intro')}</p>
         </div>
@@ -146,21 +166,6 @@ export default async function AboutPage({ params }: PageProps) {
         </section>
       )}
 
-      {/* Tiny indicator: which translation engine serves the 19 non-English
-          locales (server-side config — hidden when translation is off).
-          Tailwind margins keep it clear of the stats block above and the
-          team header below (the global reset zeroes all <p> margins). */}
-      {translationProvider ? (
-        <p className="muted small" style={{ marginTop: 20, marginBottom: 12, lineHeight: 1.7 }}>
-          {translationProvider.model
-            ? t('translationViaModel', {
-                provider: translationProvider.label,
-                model: translationProvider.model,
-              })
-            : t('translationVia', { provider: translationProvider.label })}
-        </p>
-      ) : null}
-
       {/* ------------------------------------------------------------------ */}
       {/* Team                                                                */}
       {/* ------------------------------------------------------------------ */}
@@ -177,15 +182,19 @@ export default async function AboutPage({ params }: PageProps) {
           </div>
         </div>
         <div className="grid-3" style={{ marginTop: 8 }}>
-          {TEAM_MEMBERS.map((member) => (
-            <TeamCard
-              key={member.name}
-              member={member}
-              role={t(member.roleKey)}
-              bio={member.bio?.trim() ? member.bio : t('bioPlaceholder')}
-              openLabel={t('openProfile', { name: member.name })}
-            />
-          ))}
+          {TEAM_MEMBERS.map((member) => {
+            const o = teamOverride(member.settingKey)
+            return (
+              <TeamCard
+                key={member.name}
+                member={member}
+                role={t(member.roleKey)}
+                imageUrl={o.avatar ?? member.imageUrl}
+                bio={o.bio?.trim() ? o.bio : member.bio?.trim() ? member.bio : t('bioPlaceholder')}
+                openLabel={t('openProfile', { name: member.name })}
+              />
+            )
+          })}
         </div>
       </section>
 

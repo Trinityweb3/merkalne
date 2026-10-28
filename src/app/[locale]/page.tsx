@@ -8,6 +8,7 @@ import { SectionHead } from '@/components/site/section-head'
 import { PostGrid } from '@/components/site/post-grid'
 import { SupportBanner } from '@/components/site/support-banner'
 import { VisitorSafety } from '@/components/site/visitor-safety'
+import { AdSlot } from '@/components/site/ads/ad-slot'
 
 export const dynamic = 'force-dynamic'
 
@@ -62,6 +63,11 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
           </div>
         </section>
 
+        {/* Auction banner: a compact sponsored strip right below the hero.
+            Renders nothing while the auction has no eligible campaign — no
+            empty boxes. */}
+        <AdSlot slot="home_banner" variant="banner" />
+
         {sections.map((section, i) => (
           <section className="section-block" key={section} aria-labelledby={`section-${section}`}>
             {/* Section NAMES stay English in every locale (functional
@@ -70,9 +76,13 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
               {SECTION_META[section].title}
             </span>
             <SectionHead section={section} />
+            {/* The first rail also carries one in-feed ad after its 3rd card
+                (the slot is a grid cell — seamless, but visually distinct
+                from real job posts). */}
             <PostGrid
               posts={rails[i].map(serializePost)}
               homeGrid
+              feedAdAfter={i === 0 ? 3 : undefined}
               emptyTitle={tb('sectionNoPosts', { section: SECTION_META[section].title })}
               emptyText={section === 'blog' ? ts('emptyBlog') : ts('emptyEditorial')}
             />

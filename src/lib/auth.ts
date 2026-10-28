@@ -116,14 +116,23 @@ export async function getSessionFromToken(token: string): Promise<AuthContext | 
     await db.session
       .update({ where: { id: session.id }, data: { expiresAt: newExpiry, lastUsedAt: new Date() } })
       .catch(() => undefined)
-    const store = await cookies()
-    store.set(SESSION_COOKIE, token, {
-      httpOnly: true,
-      secure: env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      path: '/',
-      maxAge: Math.floor(SESSION_TTL_MS / 1000),
-    })
+    // Best-effort cookie extension: during a page render Next only allows
+    // cookie writes in Server Actions / Route Handlers — a throw here would
+    // 500 the page (profile, ads dashboard, …) for users in the refresh
+    // window. The DB expiry above is the source of truth; the cookie
+    // maxAge catching up on the next action/route call is fine.
+    try {
+      const store = await cookies()
+      store.set(SESSION_COOKIE, token, {
+        httpOnly: true,
+        secure: env.NODE_ENV === 'production',
+        sameSite: 'lax',
+        path: '/',
+        maxAge: Math.floor(SESSION_TTL_MS / 1000),
+      })
+    } catch {
+      // Render context — skip; the session row was already extended.
+    }
   }
 
   return {
