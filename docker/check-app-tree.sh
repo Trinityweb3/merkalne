@@ -18,8 +18,8 @@
 # legitimately changes — e.g. a new app-level convention file):
 #   [locale]/           every page + the root layout (i18n)
 #   api/                route handlers (locale-independent)
-#   globals.css         global stylesheet (the current de-slopped design)
-#   globals.legacy.css  the pre-redesign stylesheet, kept as a backup
+#   globals.css         global stylesheet (the original template design,
+#                       restored after the de-slop redesign was rolled back)
 #   robots.ts           robots.txt generator
 #   sitemap.ts          sitemap generator
 # ---------------------------------------------------------------------------
@@ -44,7 +44,7 @@ cd "${app_dir}"
 stale=""
 for entry in *; do
   case "${entry}" in
-    '[locale]'|api|globals.css|globals.legacy.css|robots.ts|sitemap.ts) ;;
+    '[locale]'|api|globals.css|robots.ts|sitemap.ts) ;;
     *) stale="${stale}  ${entry}\n" ;;
   esac
 done

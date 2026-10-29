@@ -1,3 +1,14 @@
+/* ===========================================================================
+ * GLOBALS — original template design (restored 2026-10-28).
+ *
+ * The de-slopped editorial redesign (Space Grotesk display type, sharp
+ * corners, borderless tinted cards, grid-patterned hero) was rejected and
+ * rolled back — this is the original design back as the live stylesheet.
+ * Newer feature UI (ads dashboard, ad slots, operator CMS blocks on /about)
+ * intentionally builds on standard Tailwind/shadcn utilities on top of
+ * these tokens, so it keeps working with this file.
+ * =========================================================================== */
+
 @import "tailwindcss";
 @import "tw-animate-css";
 
@@ -7,7 +18,6 @@
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --font-sans: var(--font-inter);
-  --font-display: var(--font-display);
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
@@ -41,45 +51,35 @@
   --color-link: var(--link);
   --color-positive: var(--positive);
   --color-negative: var(--negative);
-  --radius-sm: 0.125rem;
-  --radius-md: 0.25rem;
-  --radius-lg: 0.375rem;
-  --radius-xl: 0.5rem;
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
 }
 
 /* ---------------------------------------------------------------------------
- * Merklane design tokens — DE-SLOPPED EDITORIAL WEB3 (2026 refactor).
- *
- * The previous "generic template" look lives on in globals.legacy.css
- * (kept as a backup, not imported). This system: Space Grotesk display
- * headings, sharp (rounded-sm) corners, borderless tinted cards with a
- * subtle hover glow, a massive grid-patterned hero.
- *
- * Dark is the default theme; light is opt-in via the `.light` class managed
- * by next-themes.
+ * Merklane design tokens — dark is the default theme (as on the reference),
+ * light is opt-in via the `.light` class managed by next-themes.
  * ------------------------------------------------------------------------- */
 
 :root,
 .dark {
-  --background: #0b0d10;
-  --foreground: #f2f3f5;
-  /* Tinted, borderless card surface (bg-white/5 vibe) — depth comes from
-     the tint + hover glow, not from 1px outlines. */
-  --card: rgba(255, 255, 255, 0.045);
-  --card-solid: #16181d;
-  --card-foreground: #f2f3f5;
-  --popover: #191c22;
-  --popover-foreground: #f2f3f5;
-  --primary: #f2f3f5;
-  --primary-foreground: #0d0f13;
-  --secondary: #20242b;
-  --secondary-foreground: #f2f3f5;
-  --muted: rgba(255, 255, 255, 0.055);
+  --background: #0e1013;
+  --foreground: #f0f1f3;
+  --card: #171a1f;
+  --card-foreground: #f0f1f3;
+  --popover: #1d2027;
+  --popover-foreground: #f0f1f3;
+  --primary: #f1f3f5;
+  --primary-foreground: #101216;
+  --secondary: #22262e;
+  --secondary-foreground: #f0f1f3;
+  --muted: #20242b;
   --muted-foreground: #a3a9b5;
-  --accent: #232830;
+  --accent: #282d36;
   --accent-foreground: #fff;
   --destructive: #ff8b8b;
-  --border: #262b33;
+  --border: #2b3039;
   --input: #363c47;
   --ring: #8ad9fa;
   --chart-1: #37b9f4;
@@ -87,59 +87,53 @@
   --chart-3: #8587ef;
   --chart-4: #e2b361;
   --chart-5: #ce7d98;
-  --radius: 0.25rem;
+  --radius: 0.65rem;
   --sidebar: #111419;
-  --sidebar-foreground: #f2f3f5;
+  --sidebar-foreground: #f0f1f3;
   --sidebar-primary: #fff;
-  --sidebar-primary-foreground: #0d0f13;
+  --sidebar-primary-foreground: #101216;
   --sidebar-accent: #252a32;
   --sidebar-accent-foreground: #fff;
-  --sidebar-border: #262b33;
+  --sidebar-border: #2b3039;
   --sidebar-ring: #8ad9fa;
-  --link: #56c8f9;
+  --link: #54c4f5;
   --positive: #79d7b3;
   --negative: #ee919d;
-  --shadow: 0 20px 70px #0006;
-  /* Hover glow: a hairline of accent + a soft outer bloom. */
-  --glow-ring: color-mix(in srgb, var(--link) 32%, transparent);
-  --glow-bloom: 0 14px 44px -16px color-mix(in srgb, var(--link) 34%, transparent);
+  --shadow: 0 20px 70px #0004;
 }
 
 :root.light,
 .light {
   --background: #f7f8fa;
-  --foreground: #161a22;
-  --card: #ffffff;
-  --card-solid: #ffffff;
-  --card-foreground: #161a22;
-  --popover: #ffffff;
-  --popover-foreground: #161a22;
-  --primary: #141922;
+  --foreground: #171b23;
+  --card: #fff;
+  --card-foreground: #171b23;
+  --popover: #fff;
+  --popover-foreground: #171b23;
+  --primary: #161b24;
   --primary-foreground: #fff;
-  --secondary: #eef1f5;
-  --secondary-foreground: #161a22;
+  --secondary: #edf0f4;
+  --secondary-foreground: #171b23;
   --muted: #edf0f4;
   --muted-foreground: #596374;
   --accent: #e5eaf1;
-  --accent-foreground: #161a22;
+  --accent-foreground: #171b23;
   --destructive: #ba3040;
-  --border: #dde2e9;
-  --input: #c3ccd8;
+  --border: #dce1e8;
+  --input: #c7d0dc;
   --ring: #1483b7;
   --sidebar: #fff;
-  --sidebar-foreground: #161a22;
-  --sidebar-primary: #161a22;
+  --sidebar-foreground: #171b23;
+  --sidebar-primary: #171b23;
   --sidebar-primary-foreground: #fff;
   --sidebar-accent: #edf0f4;
-  --sidebar-accent-foreground: #161a22;
-  --sidebar-border: #dde2e9;
+  --sidebar-accent-foreground: #171b23;
+  --sidebar-border: #dce1e8;
   --sidebar-ring: #1483b7;
   --link: #087baa;
   --positive: #1a7956;
   --negative: #bb344b;
-  --shadow: 0 20px 70px #15213314;
-  --glow-ring: color-mix(in srgb, var(--link) 30%, transparent);
-  --glow-bloom: 0 14px 40px -18px color-mix(in srgb, var(--link) 26%, transparent);
+  --shadow: 0 20px 70px #15213312;
 }
 
 /* ---------------------------------------------------------------------------
@@ -202,27 +196,23 @@ p {
 }
 
 h1 {
-  font-family: var(--font-display), var(--font-inter), Inter, sans-serif;
-  letter-spacing: -0.045em;
-  font-size: 2.6rem;
+  letter-spacing: -0.04em;
+  font-size: 2.5rem;
   font-weight: 700;
-  line-height: 1.08;
+  line-height: 1.17;
 }
 
 h2 {
-  font-family: var(--font-display), var(--font-inter), Inter, sans-serif;
-  letter-spacing: -0.03em;
-  font-size: 1.6rem;
-  font-weight: 700;
-  line-height: 1.22;
+  letter-spacing: -0.025em;
+  font-size: 1.55rem;
+  font-weight: 650;
+  line-height: 1.25;
 }
 
 h3 {
-  font-family: var(--font-display), var(--font-inter), Inter, sans-serif;
-  letter-spacing: -0.015em;
-  font-size: 1.12rem;
+  font-size: 1.1rem;
   font-weight: 600;
-  line-height: 1.38;
+  line-height: 1.4;
 }
 
 p + p {
@@ -266,11 +256,10 @@ p + p {
 }
 
 .eyebrow {
-  font-family: var(--font-display), var(--font-inter), Inter, sans-serif;
-  letter-spacing: 0.22em;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: var(--link);
-  font-size: 0.72rem;
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
   font-weight: 600;
 }
 
@@ -372,11 +361,10 @@ p + p {
 }
 
 .wordmark {
-  font-family: var(--font-display), var(--font-inter), Inter, sans-serif;
-  letter-spacing: -0.055em;
+  letter-spacing: -0.06em;
   white-space: nowrap;
   font-size: 1.65rem;
-  font-weight: 700;
+  font-weight: 750;
 }
 
 .wordmark span {
@@ -418,7 +406,7 @@ p + p {
 
 .icon-button {
   border: 1px solid rgba(0, 0, 0, 0);
-  border-radius: 4px;
+  border-radius: 8px;
   justify-content: center;
   align-items: center;
   min-width: 38px;
@@ -452,7 +440,7 @@ p + p {
 
 .mobile-nav a {
   color: var(--muted-foreground);
-  border-radius: 4px;
+  border-radius: 8px;
   padding: 12px 14px;
   font-size: 1rem;
 }
@@ -464,78 +452,35 @@ p + p {
 }
 
 /* ---------------------------------------------------------------------------
- * Hero & search — massive display heading over a fading grid + accent glow.
+ * Hero & search
  * ------------------------------------------------------------------------- */
 
 .hero {
-  position: relative;
-  border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
-  margin-bottom: 52px;
-  padding-block: 76px 60px;
-  overflow: hidden;
-}
-
-/* Background grid — 1px lines fading out radially (editorial Web3 texture). */
-.hero::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background-image:
-    linear-gradient(color-mix(in srgb, var(--foreground) 5%, transparent) 1px, transparent 1px),
-    linear-gradient(90deg, color-mix(in srgb, var(--foreground) 5%, transparent) 1px, transparent 1px);
-  background-size: 44px 44px;
-  mask-image: radial-gradient(120% 90% at 50% 0%, #000 25%, transparent 78%);
-  -webkit-mask-image: radial-gradient(120% 90% at 50% 0%, #000 25%, transparent 78%);
-  pointer-events: none;
-}
-
-/* Accent gradient bloom above the grid. */
-.hero::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background:
-    radial-gradient(640px 300px at 16% -4%, color-mix(in srgb, var(--link) 14%, transparent), transparent 70%),
-    radial-gradient(720px 340px at 84% 6%, color-mix(in srgb, var(--chart-3) 11%, transparent), transparent 72%);
-  pointer-events: none;
-}
-
-/* Content stays above the decor. */
-.hero > * {
-  position: relative;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 40px;
+  padding-block: 55px 45px;
 }
 
 .hero h1 {
-  font-size: clamp(2.85rem, 6.2vw, 4.6rem);
-  letter-spacing: -0.05em;
-  font-weight: 700;
-  line-height: 1.02;
+  font-size: 3.15rem;
 }
 
 .hero .hero-sub {
-  margin-top: 16px;
-  font-size: 1.1rem;
-  max-width: 56ch;
+  margin-top: 14px;
+  font-size: 1.075rem;
 }
 
 .search-box {
-  border: 1px solid color-mix(in srgb, var(--input) 75%, transparent);
-  background: color-mix(in srgb, var(--card-solid) 88%, transparent);
-  backdrop-filter: blur(6px);
+  border: 1px solid var(--input);
+  background: var(--card);
   max-width: 820px;
   box-shadow: var(--shadow);
-  border-radius: 6px;
+  border-radius: 12px;
   align-items: center;
   gap: 14px;
-  margin-top: 30px;
+  margin-top: 28px;
   padding: 10px 10px 10px 20px;
   display: flex;
-  transition: border-color 0.18s, box-shadow 0.18s;
-}
-
-.search-box:focus-within {
-  border-color: var(--glow-ring);
-  box-shadow: var(--shadow), var(--glow-bloom);
 }
 
 .search-box input {
@@ -562,28 +507,25 @@ p + p {
 }
 
 .chip {
-  border: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
+  border: 1px solid var(--border);
   background: var(--card);
   color: var(--muted-foreground);
-  border-radius: 4px;
+  border-radius: 6px;
   align-items: center;
   gap: 6px;
   padding: 5px 10px;
   font-size: 0.8rem;
   display: inline-flex;
-  transition: border-color 0.16s, color 0.16s, box-shadow 0.16s;
 }
 
 .chip:hover {
   color: var(--foreground);
-  border-color: var(--glow-ring);
-  box-shadow: var(--glow-bloom);
+  border-color: var(--input);
 }
 
 .chip.selected {
   background: var(--muted);
   color: var(--foreground);
-  border-color: var(--glow-ring);
 }
 
 /* ---------------------------------------------------------------------------
@@ -603,7 +545,7 @@ p + p {
 
 .section-title .section-icon {
   background: var(--muted);
-  border-radius: 4px;
+  border-radius: 7px;
   place-items: center;
   width: 34px;
   height: 34px;
@@ -630,43 +572,23 @@ p + p {
 
 .card {
   background: var(--card);
-  /* Borderless by design: the transparent 1px keeps the box metrics so
-     nothing shifts when the hover ring appears. Depth comes from the tint
-     and the glow, not from a solid outline. */
-  border: 1px solid transparent;
-  border-radius: 6px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
   min-width: 0;
   padding: 23px;
-  transition: box-shadow 0.18s, border-color 0.18s, transform 0.18s;
-}
-
-.card:hover {
-  border-color: color-mix(in srgb, var(--border) 75%, transparent);
-  box-shadow: var(--glow-bloom);
-}
-
-:root.light .card,
-.light .card {
-  background: #fff;
-  box-shadow: 0 1px 2px rgba(21, 33, 51, 0.05), 0 10px 28px -18px rgba(21, 33, 51, 0.16);
-}
-
-:root.light .card:hover,
-.light .card:hover {
-  box-shadow: 0 1px 2px rgba(21, 33, 51, 0.05), var(--glow-bloom);
 }
 
 .post-card {
   flex-direction: column;
   min-height: 320px;
+  transition: border-color 0.18s, transform 0.18s;
   display: flex;
   position: relative;
 }
 
 .post-card:hover {
+  border-color: var(--input);
   transform: translateY(-2px);
-  border-color: var(--glow-ring);
-  box-shadow: var(--glow-bloom);
 }
 
 .card-top {
@@ -678,9 +600,9 @@ p + p {
 }
 
 .brand-square {
-  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+  border: 1px solid var(--border);
   background: var(--secondary);
-  border-radius: 4px;
+  border-radius: 9px;
   place-items: center;
   width: 40px;
   height: 40px;
@@ -2767,268 +2689,4 @@ mark {
   .bar-value {
     grid-area: value;
   }
-}
-
-/* ---------------------------------------------------------------------------
- * Premium buttons (de-slop pass) — the shadcn <Button> keeps its variants,
- * but the default (primary) action gets a vertical gradient + hover glow and
- * every button sharpens up via the --radius-* tokens. Opt-in by component:
- * only [data-slot="button"] is touched, so links and icon-only chrome keep
- * their own look.
- * ------------------------------------------------------------------------- */
-
-[data-slot="button"] {
-  font-weight: 600;
-  letter-spacing: -0.005em;
-  transition: filter 0.16s, box-shadow 0.16s, background-color 0.16s,
-    border-color 0.16s, color 0.16s, opacity 0.16s;
-}
-
-[data-slot="button"]:not([class*="variant-outline"]):hover {
-  filter: brightness(1.04);
-}
-
-.dark [data-slot="button"].bg-primary,
-[data-slot="button"].bg-primary {
-  background-image: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--primary) 100%, white 8%),
-    var(--primary)
-  );
-  box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.18) inset,
-    0 8px 24px -14px color-mix(in srgb, var(--primary) 55%, transparent);
-}
-
-[data-slot="button"].bg-primary:hover {
-  box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.18) inset,
-    0 10px 30px -12px color-mix(in srgb, var(--primary) 60%, transparent);
-}
-
-/* ---------------------------------------------------------------------------
- * Site logo (Telegram-bot-managed, rendered on /above the About heading)
- * ------------------------------------------------------------------------- */
-
-.site-logo {
-  display: block;
-  width: 88px;
-  height: 88px;
-  object-fit: contain;
-  border-radius: 6px;
-  margin-bottom: 20px;
-  background: var(--card);
-  padding: 8px;
-}
-
-/* ---------------------------------------------------------------------------
- * Merklane Ads — <AdSlot/> placements. Deliberately DISTINCT from editorial
- * cards: tinted background, "Sponsored" badge, no brand square, sharp
- * corners, and a hover glow. A reader can never confuse an ad with a job.
- * ------------------------------------------------------------------------- */
-
-.ad-slot {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  min-width: 0;
-  padding: 18px 18px 16px;
-  border-radius: 6px;
-  border: 1px solid color-mix(in srgb, var(--chart-4) 22%, transparent);
-  background:
-    linear-gradient(
-      160deg,
-      color-mix(in srgb, var(--chart-4) 7%, transparent),
-      transparent 55%
-    ),
-    var(--card);
-  color: var(--foreground);
-  transition: box-shadow 0.18s, border-color 0.18s, transform 0.18s;
-}
-
-.ad-slot:hover {
-  transform: translateY(-2px);
-  border-color: color-mix(in srgb, var(--chart-4) 45%, transparent);
-  box-shadow: 0 14px 40px -16px color-mix(in srgb, var(--chart-4) 35%, transparent);
-}
-
-.ad-slot-badge {
-  position: absolute;
-  top: -9px;
-  inset-inline-start: 14px;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 2px 8px;
-  border-radius: 3px;
-  background: var(--card-solid);
-  border: 1px solid color-mix(in srgb, var(--chart-4) 40%, transparent);
-  color: color-mix(in srgb, var(--chart-4) 82%, var(--foreground));
-  font-size: 0.66rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.ad-slot-title {
-  font-family: var(--font-display), var(--font-inter), Inter, sans-serif;
-  letter-spacing: -0.015em;
-  font-size: 1.05rem;
-  font-weight: 600;
-  line-height: 1.35;
-}
-
-.ad-slot-text {
-  color: var(--muted-foreground);
-  font-size: 0.9rem;
-  line-height: 1.6;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-.ad-slot-bottom {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-top: auto;
-  padding-top: 12px;
-}
-
-.ad-slot-host {
-  color: var(--muted-foreground);
-  font-size: 0.78rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.ad-slot-cta {
-  color: var(--link);
-  font-size: 0.84rem;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-/* Banner variant: one compact strip below the hero (not a grid cell). */
-.ad-slot--banner {
-  margin: 0 0 44px;
-  flex-direction: row;
-  align-items: center;
-  padding: 14px 18px;
-}
-
-.ad-slot--banner .ad-slot-badge {
-  position: static;
-  order: -1;
-  flex-shrink: 0;
-  margin-inline-end: 4px;
-}
-
-.ad-slot-banner-body {
-  display: flex;
-  align-items: baseline;
-  gap: 12px;
-  flex-wrap: wrap;
-  min-width: 0;
-}
-
-.ad-slot--banner .ad-slot-title {
-  font-size: 0.98rem;
-}
-
-.ad-slot--banner .ad-slot-text {
-  -webkit-line-clamp: 1;
-  flex: 1 1 240px;
-}
-
-.ad-slot--banner .ad-slot-cta {
-  margin-inline-start: auto;
-}
-
-/* Feed variant occupies a grid cell — stretch to the card metrics. */
-.ad-slot--feed {
-  min-height: 320px;
-  margin-top: 10px;
-}
-
-/* Article variant: full-width native card at the end of a post. */
-.ad-slot--article {
-  margin-top: 26px;
-}
-
-/* ---------------------------------------------------------------------------
- * Advertiser dashboard (/ads)
- * ------------------------------------------------------------------------- */
-
-.ads-how-card {
-  margin-bottom: 40px;
-}
-
-.ads-campaign-list {
-  display: grid;
-  gap: 18px;
-}
-
-.ads-campaign-title {
-  font-size: 1.05rem;
-  letter-spacing: -0.015em;
-}
-
-.ads-textarea {
-  width: 100%;
-  border: 1px solid var(--input);
-  background: var(--background);
-  color: var(--foreground);
-  border-radius: 4px;
-  padding: 9px 12px;
-  font: inherit;
-  font-size: 0.95rem;
-  resize: vertical;
-  outline: none;
-}
-
-.ads-textarea:focus-visible {
-  border-color: var(--ring);
-}
-
-.ads-modal-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 60;
-  background: rgba(4, 6, 10, 0.66);
-  backdrop-filter: blur(3px);
-  display: grid;
-  place-items: center;
-  padding: 20px;
-}
-
-.ads-modal {
-  width: min(480px, 100%);
-  background: var(--card-solid);
-  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
-  border-radius: 6px;
-  padding: 22px;
-  box-shadow: var(--shadow);
-}
-
-.ads-deposit {
-  border: 1px dashed color-mix(in srgb, var(--chart-4) 40%, transparent);
-  border-radius: 6px;
-  padding: 14px;
-}
-
-.ads-address {
-  display: block;
-  margin-top: 8px;
-  font-family: var(--font-mono);
-  font-size: 0.8rem;
-  word-break: break-all;
-  color: var(--foreground);
-  background: var(--muted);
-  border-radius: 4px;
-  padding: 10px 12px;
 }

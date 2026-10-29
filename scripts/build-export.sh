@@ -259,7 +259,7 @@ else
 fi
 [ -f "${ROOT}/scripts/ui18n-codegen/check-messages.ts" ] && echo "  [ok]   i18n ICU message compile check present" \
   || { echo "  [FAIL] scripts/ui18n-codegen/check-messages.ts missing"; fail=1; }
-# --- Ads system + site CMS + de-slopped CSS (2026 build) ----------------------
+# --- Ads system + site CMS + legacy design (2026 build) -----------------------
 assert_file_contains "${ROOT}/prisma/schema.prisma" 'model SiteSetting' \
   "schema: SiteSetting (Telegram CMS key-value store)"
 assert_file_contains "${ROOT}/prisma/schema.prisma" 'model AdCampaign' \
@@ -380,19 +380,35 @@ assert_file_contains "${ROOT}/src/lib/bots/telegram.ts" 'telegramDownloadAsDataU
   "telegram lib: file download → data URL (CMS uploads)"
 assert_file_contains "${ROOT}/src/app/[locale]/about/page.tsx" 'getSiteOverrides' \
   "about page: dynamic team/logo from SiteSettings"
-assert_file_contains "${ROOT}/src/app/[locale]/about/page.tsx" 'site-logo' \
-  "about page: operator logo block"
-# --- De-slopped CSS (legacy kept as backup) -------------------------------------
-[ -f "${ROOT}/src/app/globals.legacy.css" ] && echo "  [ok]   globals.legacy.css kept as backup" \
-  || { echo "  [FAIL] src/app/globals.legacy.css missing (old design must stay in the repo)"; fail=1; }
-assert_file_contains "${ROOT}/src/app/globals.css" 'var(--font-display)' \
-  "globals.css: display font (Space Grotesk) wired into headings"
-assert_file_contains "${ROOT}/src/app/globals.css" '.ad-slot' \
-  "globals.css: sponsored-card styles present"
-assert_file_contains "${ROOT}/src/app/[locale]/layout.tsx" 'Space_Grotesk' \
-  "layout: Space Grotesk display face loaded"
-assert_file_contains "${ROOT}/docker/check-app-tree.sh" 'globals.legacy.css' \
-  "stale-merge guard: legacy stylesheet allow-listed"
+assert_file_contains "${ROOT}/src/app/[locale]/about/page.tsx" 'object-contain' \
+  "about page: operator logo block (legacy-safe Tailwind classes)"
+# --- Legacy design restored (de-slop rolled back) -------------------------------
+[ ! -f "${ROOT}/src/app/globals.legacy.css" ] && echo "  [ok]   globals.legacy.css gone (restored as the live globals.css)" \
+  || { echo "  [FAIL] src/app/globals.legacy.css still present — the design was rolled back, it must not ship twice"; fail=1; }
+assert_file_contains "${ROOT}/src/app/globals.css" 'original template design (restored' \
+  "globals.css: legacy template design restored as the live stylesheet"
+if grep -qF 'var(--font-display)' "${ROOT}/src/app/globals.css"; then
+  echo "  [FAIL] globals.css still wires the de-slop display font (Space Grotesk)"
+  fail=1
+else
+  echo "  [ok]   globals.css: no de-slop display-font tokens"
+fi
+if grep -qF '.ad-slot' "${ROOT}/src/app/globals.css"; then
+  echo "  [FAIL] globals.css still carries de-slop .ad-slot styles (components now use Tailwind utilities)"
+  fail=1
+else
+  echo "  [ok]   globals.css: no de-slop ad-slot styles"
+fi
+assert_file_contains "${ROOT}/src/app/[locale]/layout.tsx" "import { Inter } from 'next/font/google'" \
+  "layout: original Inter font setup restored"
+if grep -qF 'Space_Grotesk' "${ROOT}/src/app/[locale]/layout.tsx"; then
+  echo "  [FAIL] layout.tsx still loads Space Grotesk"
+  fail=1
+else
+  echo "  [ok]   layout: Space Grotesk removed (Inter only)"
+fi
+assert_file_contains "${ROOT}/src/components/site/ads/ad-slot.tsx" 'SLOT_BASE' \
+  "AdSlot: sponsored chrome via standard Tailwind utilities (legacy-safe)"
 # --- i18n: ads/adSlot namespaces in every dictionary ----------------------------
 ads_i18n_ok=0
 for dict in "${ROOT}"/src/i18n/messages/*.ts; do
@@ -596,7 +612,7 @@ if grep -rq 'McQween' "${VERIFY_DIR}/merklane/src" 2>/dev/null; then
 else
   echo "  [ok]   archive: no 'McQween' placeholder (team is Vazima/Trinity/Grobofhik)"
 fi
-# --- Ads system + site CMS + de-slopped CSS — IN-ARCHIVE ------------------------
+# --- Ads system + site CMS + legacy design — IN-ARCHIVE ------------------------
 assert_file_contains "${VERIFY_DIR}/merklane/src/lib/ads/auction.ts" 'pickWeightedRandom' \
   "archive: weighted-random auction engine ships"
 assert_file_contains "${VERIFY_DIR}/merklane/src/lib/ads/topup.ts" 'deriveDepositAddress' \
@@ -631,10 +647,12 @@ assert_file_contains "${VERIFY_DIR}/merklane/src/lib/referral.ts" 'REFERRAL_RATE
   || { echo "  [FAIL] archive: scripts/run-blockbee-e2e.sh MISSING"; archive_fail=1; }
 assert_file_contains "${VERIFY_DIR}/merklane/src/app/api/webhooks/telegram-admin/route.ts" 'Manage team' \
   "archive: admin bot CMS menus ship"
-[ -f "${VERIFY_DIR}/merklane/src/app/globals.legacy.css" ] && echo "  [ok]   archive: legacy stylesheet backup ships" \
-  || { echo "  [FAIL] archive: globals.legacy.css MISSING"; archive_fail=1; }
-assert_file_contains "${VERIFY_DIR}/merklane/src/app/globals.css" 'var(--font-display)' \
-  "archive: de-slopped stylesheet ships (display font)"
+[ ! -f "${VERIFY_DIR}/merklane/src/app/globals.legacy.css" ] && echo "  [ok]   archive: no stale globals.legacy.css (design rolled back)" \
+  || { echo "  [FAIL] archive: globals.legacy.css still ships — restored as globals.css, must not ship twice"; archive_fail=1; }
+assert_file_contains "${VERIFY_DIR}/merklane/src/app/globals.css" 'original template design (restored' \
+  "archive: legacy template design ships as the live stylesheet"
+assert_file_contains "${VERIFY_DIR}/merklane/src/components/site/ads/ad-slot.tsx" 'SLOT_BASE' \
+  "archive: ad slots styled via Tailwind utilities (legacy-safe)"
 assert_file_contains "${VERIFY_DIR}/merklane/src/i18n/messages/ru.ts" 'adSlot: {' \
   "archive: ru dictionary carries the ads namespaces"
 assert_file_contains "${VERIFY_DIR}/merklane/src/i18n/messages/ja.ts" 'adSlot: {' \

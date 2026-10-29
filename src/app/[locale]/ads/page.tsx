@@ -41,7 +41,7 @@ export default async function AdsPage({ params }: PageProps) {
         </div>
       </div>
 
-      <div className="card ads-how-card">
+      <div className="card mb-10">
         <h3>{t('howTitle')}</h3>
         <p className="muted small" style={{ marginTop: 8, lineHeight: 1.7 }}>
           {t('howText')}

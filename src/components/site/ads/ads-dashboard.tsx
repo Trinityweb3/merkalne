@@ -250,14 +250,14 @@ export function AdsDashboard() {
             </p>
           </div>
         ) : (
-          <div className="ads-campaign-list">
+          <div className="grid gap-4">
             {campaigns.map((c) => {
               const ctr = c.impressions > 0 ? (c.clicks / c.impressions) * 100 : null
               const resumable = c.status === 'paused' && c.balance >= c.bidPerView
               return (
                 <div className="card ads-campaign" key={c.id}>
                   <div className="row between wrap" style={{ gap: 10 }}>
-                    <strong className="ads-campaign-title">{c.title}</strong>
+                    <strong className="text-[1.05rem] tracking-tight">{c.title}</strong>
                     <span
                       className={`badge ${
                         c.status === 'active'
@@ -357,7 +357,7 @@ export function AdsDashboard() {
               </label>
               <textarea
                 id="ad-body"
-                className="ads-textarea"
+                className="w-full resize-y rounded-md border border-input bg-transparent px-3 py-2 text-base shadow-xs outline-none transition-[color,box-shadow] placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] md:text-sm"
                 value={body}
                 onChange={(e) => setBody(e.target.value)}
                 placeholder={t('fieldBodyPh')}
@@ -398,7 +398,7 @@ export function AdsDashboard() {
       {/* ---------------------------------------------------------------- */}
       {topUpFor ? (
         <div
-          className="ads-modal-backdrop"
+          className="fixed inset-0 z-[60] grid place-items-center bg-black/60 p-5 backdrop-blur-sm"
           role="dialog"
           aria-modal="true"
           aria-label={t('topUpTitle')}
@@ -406,7 +406,7 @@ export function AdsDashboard() {
             if (e.target === e.currentTarget) closeModal()
           }}
         >
-          <div className="card ads-modal">
+          <div className="card w-full max-w-[480px] shadow-2xl">
             <div className="row between">
               <h3>{t('topUpTitle')}</h3>
               <button
@@ -467,13 +467,13 @@ export function AdsDashboard() {
               </form>
             ) : (
               <div style={{ marginTop: 16 }}>
-                <div className="ads-deposit">
+                <div className="rounded-lg border border-dashed border-chart-4/40 p-3.5">
                   <p className="tiny muted">
                     {topUp.provider === 'blockbee' && topUp.coin
                       ? `${t('topUpAddress')} — ${coinLabel(topUp.coin)}`
                       : t('topUpAddress')}
                   </p>
-                  <code className="ads-address">{topUp.walletAddress}</code>
+                  <code className="mt-2 block break-all rounded-md bg-muted px-3 py-2.5 font-mono text-xs leading-relaxed text-foreground">{topUp.walletAddress}</code>
                   <div className="row wrap" style={{ marginTop: 10, gap: 8 }}>
                     <Button
                       variant="outline"

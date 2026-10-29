@@ -152,7 +152,6 @@ src/app/api/webhooks/blockbee/route.ts
 src/app/api/webhooks/telegram-admin/route.ts
 src/app/api/webhooks/telegram/route.ts
 src/app/globals.css
-src/app/globals.legacy.css
 src/app/robots.ts
 src/app/sitemap.ts
 src/components/providers/session-provider.tsx

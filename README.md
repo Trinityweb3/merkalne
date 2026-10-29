@@ -29,7 +29,7 @@ Built with **Next.js 16 (App Router) · TypeScript · Tailwind CSS 4 · Prisma �
 
 **Frontend (pixel-faithful to the reference design)**
 
-- De-slopped editorial design system (2026): Space Grotesk display headings, sharp `rounded-sm` corners, borderless tinted cards with a hover glow, massive grid-patterned hero — the pre-redesign stylesheet is kept verbatim as `src/app/globals.legacy.css` (backup, not imported)
+- Original template design system (restored 2026-10-28 — the de-slopped editorial redesign was rolled back): Inter font, rounded bordered cards; newer feature UI (ads dashboard, ad slots, operator CMS blocks on /about) builds on standard Tailwind/shadcn utilities over the same design tokens, so everything stays visually coherent
 - Home with hero search, quick links and the six content rails (Intern/Junior, Mid/Senior, Opportunities, Markets, Insights, Blog)
 - Section pages with filter dropdowns, progressive "Load more" pagination and empty states
 - Full article pages with sanitised markdown rendering, hashtags, view/like/dislike/report row and comments
@@ -327,7 +327,7 @@ what creates mixed states. After the redeploy, hard-refresh the browser
 
 **Built-in guard.** The Dockerfile now runs `docker/check-app-tree.sh` as the
 first step of the builder stage. If `src/app` contains anything beyond the
-expected entries (`[locale]/`, `api/`, `globals.css`, `globals.legacy.css`, `robots.ts`,
+expected entries (`[locale]/`, `api/`, `globals.css`, `robots.ts`,
 `sitemap.ts`) — i.e. leftovers from a pre-i18n bundle such as
 `src/app/[section]/` or the old root `src/app/layout.tsx` — the build stops
 immediately with a named diagnosis and the fix steps above, instead of

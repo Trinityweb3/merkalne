@@ -140,7 +140,7 @@ export default async function AboutPage({ params }: PageProps) {
               first upload lands, so the page stays honest by default. */}
           {overrides.logo ? (
             <img
-              className="site-logo"
+              className="mb-5 block h-22 w-22 rounded-lg bg-card p-2 object-contain"
               src={overrides.logo}
               alt="Merklane"
               width={160}
