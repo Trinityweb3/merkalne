@@ -1,17 +1,21 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { useTranslations } from 'next-intl'
+import { useLocale, useTranslations } from 'next-intl'
 import { Megaphone } from 'lucide-react'
 
 /**
  * <AdSlot/> — one auction-powered ad placement.
  *
- * Fetches a weighted-random winner from /api/ads/serve on mount; a 204
- * (ads off, nothing eligible, rate limited) renders NOTHING — a sold-out
- * auction never leaves an empty box on the page. The rendered card is
- * deliberately distinct from real job posts: a "Sponsored" badge, a gold
- * tinted border and rel="sponsored" so it can never be mistaken for editorial.
+ * Fetches a weighted-random winner from /api/ads/serve on mount, passing
+ * the TARGETING CONTEXT: the active interface locale (always) and the
+ * content section (via the `section` prop — "intern-junior", "home", …).
+ * Campaigns whose targeting excludes this context never enter the draw.
+ * A 204 (ads off, nothing eligible, rate limited) renders NOTHING — a
+ * sold-out auction never leaves an empty box on the page. The rendered
+ * card is deliberately distinct from real job posts: a "Sponsored" badge,
+ * a gold tinted border and rel="sponsored" so it can never be mistaken for
+ * editorial.
  *
  * Variants (standard Tailwind utilities, legacy design language — rounded
  * bordered bg-card blocks, no dependency on custom globals.css classes):
@@ -51,17 +55,23 @@ const SLOT_VARIANTS = {
 export function AdSlot({
   slot,
   variant = 'feed',
+  section,
 }: {
   slot: string
   variant?: 'banner' | 'feed' | 'article'
+  /** Content section slug ("intern-junior", …) or "home" — targeting context. */
+  section?: string
 }) {
   const t = useTranslations('adSlot')
+  const locale = useLocale()
   const [ad, setAd] = useState<ServedAd | null>(null)
   const clickedRef = useRef(false)
 
   useEffect(() => {
     let cancelled = false
-    fetch(`/api/ads/serve?slot=${encodeURIComponent(slot)}`)
+    const qs = new URLSearchParams({ slot, locale })
+    if (section) qs.set('section', section)
+    fetch(`/api/ads/serve?${qs.toString()}`)
       .then(async (res) => {
         if (!res.ok) return null // 204 or error → no ad
         // Unwrap the { ok, data } envelope the API always answers with.
@@ -77,7 +87,7 @@ export function AdSlot({
     return () => {
       cancelled = true
     }
-  }, [slot])
+  }, [slot, locale, section])
 
   if (!ad) return null
 

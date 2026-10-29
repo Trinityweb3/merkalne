@@ -73,7 +73,7 @@ const HELP_TEXT = [
   '',
   '<b>Site content (CMS)</b>',
   '👥 Manage team — set each member\u2019s bio and avatar photo.',
-  '🖼 Change logo — upload the site logo shown on /about.',
+  '🖼 Change logo — upload the browser tab icon (favicon).',
   'Changes go live within a minute (60 s cache).',
   '',
   '<b>Power commands</b>',
@@ -350,9 +350,9 @@ async function handleCallback(update: TelegramUpdate, fromId: string, chatId: st
       [
         '<b>🖼 Change the site logo</b>',
         '',
-        'Send the logo as a photo now (square works best; the card renders',
-        'it at 56px, /about up to 160px). I will download it, store it and',
-        'the site picks it up within a minute.',
+        'Send the logo as a photo now (square works best — it becomes the',
+        'favicon, the little icon in the browser tab). I will download it,',
+        'store it and tabs pick it up within a minute.',
         '',
         '<i>Send /cancel to abort.</i>',
       ].join('\n'),
@@ -644,7 +644,7 @@ async function handlePhoto(update: TelegramUpdate, fromId: string, chatId: strin
     await clearState(fromId)
     await send(
       chatId,
-      `✅ Site logo updated (${(download.bytes / 1024).toFixed(0)} KB). /about shows it within a minute.`,
+      `✅ Site logo updated (${(download.bytes / 1024).toFixed(0)} KB). The browser tab icon updates within a minute.`,
       mainMenu,
     )
   } else if (cms.member) {

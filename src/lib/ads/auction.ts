@@ -2,11 +2,18 @@
  * Merklane Ads — the weighted-random auction engine.
  *
  * When a slot asks for an ad, every ACTIVE campaign with a remaining balance
- * ≥ its bid enters the draw. The probability of being picked is proportional
- * to `bidPerView` (roulette-wheel selection): a $0.02 campaign is picked
- * twice as often as a $0.01 one. This keeps inventory distributed across
- * advertisers (no pure pay-to-win starvation) while letting higher bids buy
- * more share — the "transparent auction" promised on the public page.
+ * ≥ its bid that TARGETS the page being served enters the draw. The
+ * probability of being picked is proportional to `bidPerView`
+ * (roulette-wheel selection): a $0.02 campaign is picked twice as often as
+ * a $0.01 one. This keeps inventory distributed across advertisers (no pure
+ * pay-to-win starvation) while letting higher bids buy more share — the
+ * "transparent auction" promised on the public page.
+ *
+ * Targeting (see src/lib/ads/targeting.ts): a campaign may restrict itself
+ * to specific content sections and interface languages (CSV lists on the
+ * campaign row). Empty lists = match everywhere. The slot's request
+ * carries the serving context (section slug + locale); campaigns whose
+ * targeting excludes it never enter the wheel.
  *
  * Billing is atomic per impression: the balance decrement is a conditional
  * `updateMany` (`WHERE balance >= bid`), so two concurrent slot requests can
@@ -15,6 +22,7 @@
  */
 import { db } from '@/lib/db'
 import { env } from '@/lib/env'
+import { targetingMatches, type AdRequestContext } from '@/lib/ads/targeting'
 
 export const AD_SLOT_IDS = ['home_banner', 'feed', 'article_bottom'] as const
 export type AdSlotId = (typeof AD_SLOT_IDS)[number]
@@ -93,19 +101,24 @@ function hostOf(url: string): string {
 
 /**
  * Serve one ad for a slot: draw → atomically deduct the bid → write the
- * "view" ledger row. Returns null when ads are off, no campaign is eligible
- * or every drawn campaign lost the balance race (rare).
+ * "view" ledger row. `ctx` carries the serving context (section + locale)
+ * used to filter campaigns by their targeting; omit it to serve without
+ * targeting restrictions (matches everything, including targeted
+ * campaigns — the legacy behaviour). Returns null when ads are off, no
+ * campaign is eligible or every drawn campaign lost the balance race (rare).
  */
-export async function serveAd(_slot: string): Promise<ServedAd | null> {
+export async function serveAd(_slot: string, ctx: AdRequestContext = {}): Promise<ServedAd | null> {
   if (!adsEnabled()) return null
 
   const candidates = await db.adCampaign.findMany({
     where: { status: 'active', balance: { gte: 1 } },
-    select: { id: true, bidPerView: true, balance: true },
+    select: { id: true, bidPerView: true, balance: true, targetSections: true, targetLocales: true },
   })
-  // Only campaigns whose balance still covers their own bid enter the wheel.
+  // Only campaigns whose balance still covers their own bid — and whose
+  // targeting includes the page being served — enter the wheel.
   const eligible = candidates
     .filter((c) => c.bidPerView >= 1 && c.balance >= c.bidPerView)
+    .filter((c) => targetingMatches(c.targetSections, c.targetLocales, ctx))
     .map((c) => ({ id: c.id, bidPerView: c.bidPerView }))
 
   for (let attempt = 0; attempt < MAX_DRAW_ATTEMPTS; attempt++) {

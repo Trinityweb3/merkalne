@@ -21,6 +21,7 @@ import { botEnv } from './config'
 import { telegramSendMessage } from './telegram'
 import { sendJobAlertEmail } from './email-alerts'
 import { formatTelegramJobAlert, type AlertPost } from './format'
+import { isPremiumActive } from '@/lib/premium/plan'
 
 // ---------------------------------------------------------------------------
 // Recipients
@@ -32,11 +33,19 @@ export interface PremiumRecipient {
   telegramChatId: string | null
 }
 
-/** Users with an active premium plan (plan=premium AND not expired). */
+/**
+ * Users with an ACTIVE paid plan — Premium OR Premium+ (plan in
+ * PAID_PLANS, premiumUntil null = never-expires grant, or in the future).
+ *
+ * CRITICAL business rule: free users (and expired subscriptions) NEVER
+ * receive job alerts, no exceptions. isPremiumActive is the single shared
+ * gate — the same helper the Telegram bots, the alerts page and the
+ * checkout webhook use — so every surface agrees on who is a subscriber.
+ */
 export async function activePremiumUsers(): Promise<PremiumRecipient[]> {
   const users = await db.user.findMany({
     where: {
-      plan: 'premium',
+      plan: { in: ['premium', 'premium_plus'] },
       OR: [{ premiumUntil: null }, { premiumUntil: { gt: new Date() } }],
     },
     select: {
@@ -189,7 +198,7 @@ export async function dispatchPendingPosts(opts?: { maxPosts?: number }): Promis
 // Retry pass (failed + stale pending rows)
 // ---------------------------------------------------------------------------
 
-export async function retryFailedNotifications(): Promise<{ retried: number; sent: number; failed: number }> {
+export async function retryFailedNotifications(): Promise<{ retried: number; sent: number; failed: number; skipped: number }> {
   const cutoff = new Date(Date.now() - 60_000)
   const rows = await db.notificationLog.findMany({
     where: {
@@ -204,8 +213,28 @@ export async function retryFailedNotifications(): Promise<{ retried: number; sen
 
   let sent = 0
   let failed = 0
+  let skipped = 0
 
   for (const row of rows) {
+    // PAYWALL RE-CHECK (the dispatch gate must hold on retries too): a user
+    // whose subscription expired (or was revoked) between the original send
+    // and this retry is skipped — the row ages out as "skipped" instead of
+    // delivering a paid feature for free.
+    if (row.userId) {
+      const user = await db.user.findUnique({
+        where: { id: row.userId },
+        select: { plan: true, premiumUntil: true },
+      })
+      if (!user || !isPremiumActive(user)) {
+        await db.notificationLog.update({
+          where: { id: row.id },
+          data: { status: 'skipped', error: 'premium_lapsed', attempts: { increment: 1 } },
+        })
+        skipped++
+        continue
+      }
+    }
+
     let result: { delivered: boolean; error?: string }
     try {
       if (row.channel === 'email') {
@@ -238,5 +267,5 @@ export async function retryFailedNotifications(): Promise<{ retried: number; sen
     }
   }
 
-  return { retried: rows.length, sent, failed }
+  return { retried: rows.length, sent, failed, skipped }
 }

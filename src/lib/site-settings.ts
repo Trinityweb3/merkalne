@@ -4,11 +4,13 @@
  * The admin bot's "Manage team" / "Change logo" flows write key/value rows
  * into the SiteSetting table (uploaded photos as base64 data URLs, bios as
  * plain text). Everything is read here with a short in-process cache so
- * /about and other readers never add a DB round trip per request — a
- * 60-second staleness window is perfectly fine for operator content.
+ * /about, /api/favicon and other readers never add a DB round trip per
+ * request — a 60-second staleness window is perfectly fine for operator
+ * content.
  *
  * Keys (single source of truth — keep in sync with the bot route):
- *   current_logo_url       site logo rendered on /about
+ *   current_logo_url       browser tab icon — served by /api/favicon
+ *                          (never rendered as an <img> on the page)
  *   team_<member>_avatar   uploaded avatar (data URL)
  *   team_<member>_bio      bio text
  * with <member> ∈ TEAM_MEMBER_KEYS (vazima / trinity / grobofhik).

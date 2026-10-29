@@ -3,12 +3,14 @@
  *
  * Runs a MOCK BlockBee API in-process (real RSA keypair, same endpoints and
  * payload shapes as the production processor) and drives the FULL payment
- * journey against a live dev server:
+ * journey against a live dev server (wallet-first ads flow):
  *
- *   top-up intention (coin picker, TRON + unknown coins rejected)
+ *   wallet deposit intention (coin picker, TRON + unknown coins rejected,
+ *   campaign create with an empty wallet rejected)
  *   → signed pending IPN (RSA x-ca-signature)
- *   → signed confirmed IPN (HMAC token) → campaign credited + referrer's
+ *   → signed confirmed IPN (HMAC token) → ad WALLET credited + referrer's
  *     50% commission landed
+ *   → campaign created + funded FROM the wallet (starts ACTIVE)
  *   → duplicate IPN → idempotent (no double credit)
  *   → forged / missing signature → 401 + PaymentLog rejected
  *   → wrong nonce / unknown order → acked but never credited
@@ -303,13 +305,20 @@ async function main(): Promise<void> {
   })
   check(Boolean(referrer.id && advertiser.id), 'users + sessions seeded')
 
-  console.log('— 2. campaign + BlockBee top-up intention —')
-  const created = await call('/api/ads/campaigns', {
+  console.log('— 2. wallet-first ads flow: deposit intention → campaign funded from the wallet —')
+  // Campaign create BEFORE the wallet holds money → rejected (the old
+  // "create paused, top up later" flow is gone — see /api/ads/campaigns).
+  const premature = await call('/api/ads/campaigns', {
     method: 'POST',
-    body: { title: 'BlockBee test campaign', body: 'Paying with hosted addresses.', ctaUrl: 'https://acme.example', bidPerView: 2 },
+    body: { title: 'Premature campaign', body: 'No wallet funds yet.', ctaUrl: 'https://acme.example', bidPerView: 2, budgetCents: 500 },
   })
-  check(created.status === 201, `campaign created (got ${created.status})`)
-  const campaignId = created.data?.id as string
+  check(premature.status === 400 && premature.data?.code === 'insufficient_wallet', 'campaign create with empty wallet → 400 insufficient_wallet')
+
+  const tooSmallBudget = await call('/api/ads/campaigns', {
+    method: 'POST',
+    body: { title: 'Tiny budget campaign', body: 'Below the minimum flight.', ctaUrl: 'https://acme.example', bidPerView: 10, budgetCents: 300 },
+  })
+  check(tooSmallBudget.status === 400 && tooSmallBudget.data?.code === 'budget_too_small', 'budget below the 50-view minimum → 400 budget_too_small')
 
   const list = await call('/api/ads/campaigns')
   check(list.data?.topUp?.mode === 'blockbee', 'campaigns GET advertises blockbee mode')
@@ -322,24 +331,27 @@ async function main(): Promise<void> {
 
   const tronTopUp = await call('/api/ads/topups', {
     method: 'POST',
-    body: { campaignId, amountCents: 500, coin: 'trc20_usdt' },
+    body: { amountCents: 500, coin: 'trc20_usdt' },
   })
   check(tronTopUp.status === 400, 'TRON top-up rejected (policy ban)')
 
   const unknownCoin = await call('/api/ads/topups', {
     method: 'POST',
-    body: { campaignId, amountCents: 500, coin: 'bitcoin' },
+    body: { amountCents: 500, coin: 'bitcoin' },
   })
   check(unknownCoin.status === 400, 'coin outside allowlist rejected')
 
   const topUp = await call('/api/ads/topups', {
     method: 'POST',
-    body: { campaignId, amountCents: 500, coin: 'polygon_usdt' },
+    body: { amountCents: 500, coin: 'polygon_usdt' },
   })
-  check(topUp.status === 201, `top-up intention created (got ${topUp.status})`)
+  check(topUp.status === 201, `wallet deposit intention created (got ${topUp.status})`)
   const topUpId = topUp.data?.id as string
   check(/^MOCK[a-f0-9]{34}$/.test(topUp.data?.walletAddress ?? ''), 'hosted address from BlockBee returned')
   check(topUp.data?.provider === 'blockbee' && topUp.data?.coin === 'polygon_usdt', 'provider + coin echoed')
+
+  const walletPending = await call('/api/ads/wallet')
+  check(walletPending.data?.balanceCents === 0 && walletPending.data?.pendingCents === 500, 'wallet shows the pending deposit')
 
   const mockCreate = createdIntentions[createdIntentions.length - 1]
   check(
@@ -371,22 +383,48 @@ async function main(): Promise<void> {
   const afterPending = await db.cryptoTopUp.findUnique({ where: { id: topUpId } })
   check(afterPending?.status === 'pending' && afterPending?.uuid === ipnBase.uuid, 'still pending, uuid snapshotted')
 
-  console.log('— 4. confirmed IPN (HMAC token) → credit + 50% referral —')
+  console.log('— 4. confirmed IPN (HMAC token) → wallet credit + 50% referral —')
   const confirmed = await sendIpn({ ...ipnBase, pending: '0', txid_in: '0xtxin222' }, { auth: 'hmac' })
   check(confirmed.status === 200, 'confirmed IPN accepted (HMAC path)')
 
-  let campaignRow = (await call('/api/ads/campaigns')).data?.campaigns?.find((c: any) => c.id === campaignId)
-  check(campaignRow?.balance === 500, `campaign credited 500¢ (got ${campaignRow?.balance})`)
+  const advertiserRow = await db.user.findUnique({ where: { id: advertiser.id } })
+  check(advertiserRow?.adBalance === 500, `ad wallet credited 500¢ (got ${advertiserRow?.adBalance})`)
   const referrerRow = await db.user.findUnique({ where: { id: referrer.id } })
   check(referrerRow?.referralBalance === 250, `referrer earned 250¢ — 50% (got ${referrerRow?.referralBalance})`)
 
-  console.log('— 5. duplicate confirmed IPN → idempotent —')
+  const walletAfter = await call('/api/ads/wallet')
+  check(walletAfter.data?.balanceCents === 500, `wallet tab shows 500¢ (got ${walletAfter.data?.balanceCents})`)
+  check(walletAfter.data?.pendingCents === 0, 'pending deposit cleared')
+  check(
+    Array.isArray(walletAfter.data?.topUps) && walletAfter.data.topUps.some((t: any) => t.id === topUpId && t.status === 'confirmed'),
+    'deposit history lists the confirmed intention',
+  )
+
+  console.log('— 5. campaign funded from the wallet —')
+  const created = await call('/api/ads/campaigns', {
+    method: 'POST',
+    body: { title: 'BlockBee test campaign', body: 'Paying with hosted addresses.', ctaUrl: 'https://acme.example', bidPerView: 2, budgetCents: 500 },
+  })
+  check(created.status === 201, `campaign created + funded from wallet (got ${created.status})`)
+  check(created.data?.status === 'active', 'funded campaign starts ACTIVE (serves immediately)')
+  const campaignId = created.data?.id as string
+
+  const walletSpent = await call('/api/ads/wallet')
+  check(walletSpent.data?.balanceCents === 0, 'wallet drained by the allocation')
+  check(walletSpent.data?.inCampaignsCents === 500, 'in-campaigns total reflects the flight budget')
+
+  let campaignRow = (await call('/api/ads/campaigns')).data?.campaigns?.find((c: any) => c.id === campaignId)
+  check(campaignRow?.balance === 500, `campaign flight budget 500¢ (got ${campaignRow?.balance})`)
+
+  console.log('— 5b. duplicate confirmed IPN → idempotent —')
   const dup = await sendIpn({ ...ipnBase, pending: '0', txid_in: '0xtxin222' }, { auth: 'both' })
   check(dup.status === 200, 'duplicate IPN acked')
-  campaignRow = (await call('/api/ads/campaigns')).data?.campaigns?.find((c: any) => c.id === campaignId)
-  check(campaignRow?.balance === 500, `no double credit (still 500¢, got ${campaignRow?.balance})`)
+  const advertiserDup = await db.user.findUnique({ where: { id: advertiser.id } })
+  check(advertiserDup?.adBalance === 0, `no double wallet credit (still 0¢, got ${advertiserDup?.adBalance})`)
   const referrerRow2 = await db.user.findUnique({ where: { id: referrer.id } })
   check(referrerRow2?.referralBalance === 250, `no double commission (still 250¢, got ${referrerRow2?.referralBalance})`)
+  campaignRow = (await call('/api/ads/campaigns')).data?.campaigns?.find((c: any) => c.id === campaignId)
+  check(campaignRow?.balance === 500, `campaign budget untouched by the duplicate (got ${campaignRow?.balance})`)
 
   console.log('— 6. signature rails —')
   const forged = await sendIpn({ ...ipnBase, pending: '0' }, { auth: 'forged' })

@@ -44,6 +44,7 @@
     "mini-services",
     "tool-results",
     "download",
-    "upload"
+    "upload",
+    "dist-export"
   ]
 }

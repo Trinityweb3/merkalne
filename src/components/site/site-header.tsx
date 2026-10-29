@@ -3,12 +3,12 @@
 import { useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { Link, usePathname } from '@/i18n/navigation'
-import { Search, Menu, X } from 'lucide-react'
+import { BadgeCheck, Search, Menu, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ThemeToggle } from '@/components/site/theme-toggle'
 import { LanguagePicker } from '@/components/site/language-picker'
 import { UserMenu } from '@/components/site/user-menu'
-import { useSession } from '@/components/providers/session-provider'
+import { useSession, sessionPremiumActive } from '@/components/providers/session-provider'
 
 interface NavItem {
   href: string
@@ -44,6 +44,7 @@ export function SiteHeader() {
   }
 
   const isActive = (href: string) => pathname === href || pathname.startsWith(`${href}/`)
+  const premiumActive = sessionPremiumActive(user)
 
   return (
     <>
@@ -74,8 +75,20 @@ export function SiteHeader() {
           </nav>
 
           <div className="header-tools">
-            <Link href="/premium" className="header-premium small link">
-              {th('premium')}
+            {/* Subscription status: “Premium Active ✓” while a paid plan runs,
+                the plain upsell otherwise. */}
+            <Link
+              href="/premium"
+              className={`header-premium small link ${premiumActive ? 'premium-active' : ''}`}
+              style={premiumActive ? { display: 'inline-flex', alignItems: 'center', gap: 4 } : undefined}
+            >
+              {premiumActive ? (
+                <>
+                  <BadgeCheck width={14} height={14} aria-hidden /> {th('premiumActive')}
+                </>
+              ) : (
+                th('premium')
+              )}
             </Link>
             <Link href="/search" className="icon-button" aria-label={th('search')}>
               <Search width={18} height={18} />
@@ -114,8 +127,18 @@ export function SiteHeader() {
               {item.plus ? <span style={{ color: 'var(--link)', marginLeft: 8 }}>+</span> : null}
             </Link>
           ))}
-          <Link href="/premium" className={isActive('/premium') ? 'active' : ''}>
-            {th('premium')}
+          <Link
+            href="/premium"
+            className={isActive('/premium') ? 'active' : ''}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
+          >
+            {premiumActive ? (
+              <>
+                <BadgeCheck width={14} height={14} aria-hidden /> {th('premiumActive')}
+              </>
+            ) : (
+              th('premium')
+            )}
           </Link>
           <Link href="/search" className={isActive('/search') ? 'active' : ''}>
             {th('search')}

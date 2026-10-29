@@ -21,7 +21,7 @@ export function SiteFooter() {
             <Link href="/premium">{t('premium')}</Link>
             <Link href="/alerts">{t('jobAlerts')}</Link>
             <Link href="/recruiter">{t('premiumTools')}</Link>
-            <Link href="/ads">{t('ads')}</Link>
+            <Link href="/profile/ads">{t('ads')}</Link>
             <Link href="/contact">{t('contact')}</Link>
           </div>
         </div>

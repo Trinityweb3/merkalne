@@ -50,6 +50,10 @@ model User {
   /// Referral commission balance in US cents — 50% of every confirmed
   /// top-up made by referred users. Withdrawn via BlockBee payouts.
   referralBalance Int     @default(0)
+  /// Advertiser WALLET balance in US cents. Crypto deposits (BlockBee IPN)
+  /// land here first; campaign budgets are drawn from it (the campaign's
+  /// own `balance` is the spendable flight budget the auction bills).
+  adBalance     Int     @default(0)
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
@@ -62,6 +66,7 @@ model User {
   telegramLink   TelegramLink?
   adCampaigns    AdCampaign[]
   adTopUps       CryptoTopUp[]
+  premiumOrders  PremiumOrder[]
   referredBy     User?                @relation("UserReferrals", fields: [referredById], references: [id], onDelete: SetNull)
   referrals      User[]               @relation("UserReferrals")
   withdrawals    ReferralWithdrawal[]
@@ -437,6 +442,12 @@ model AdCampaign {
   balance      Int      @default(0)
   /// Price per served impression in US cents — doubles as the auction weight
   bidPerView   Int      @default(1)
+  /// Comma-separated target section slugs ("intern-junior,mid-senior").
+  /// Empty = match every section. Portable CSV instead of a scalar list
+  /// (see modelling rules at the top of this file).
+  targetSections String  @default("")
+  /// Comma-separated target locale codes ("en,ru"). Empty = every language.
+  targetLocales  String  @default("")
   status       String   @default("active")
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
@@ -509,6 +520,66 @@ model CryptoTopUp {
   campaign   AdCampaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
 
   @@index([advertiserId, status])
+  @@index([status, createdAt])
+  @@index([provider, status])
+}
+
+// ---------------------------------------------------------------------------
+// Premium subscriptions (BlockBee billing — Premium & Premium+)
+// ---------------------------------------------------------------------------
+
+/**
+ * One Premium/Premium+ checkout intention. The row id IS the BlockBee
+ * order_id and carries the routing prefix:
+ *
+ *   prem_<m|y>_<userId>_<rand>       → Premium   ($5/month · $30/year)
+ *   premplus_<m|y>_<userId>_<rand>   → Premium+  ($15/month · $90/year)
+ *
+ * The IPN webhook (/api/webhooks/blockbee) routes by that prefix, resolves
+ * the exact row by id, verifies the per-row callbackNonce and — once the
+ * on-chain payment confirms — flips status to "confirmed" and extends the
+ * user's plan/premiumUntil exactly once (atomic updateMany guard, same
+ * pattern as CryptoTopUp). plan/period/days are persisted on the row so the
+ * webhook never trusts the prefix string beyond routing.
+ *
+ * status: "pending" | "confirmed" | "expired".
+ */
+model PremiumOrder {
+  id             String    @id
+  userId         String
+  /// "premium" | "premium_plus" — what this order activates
+  plan           String
+  /// "monthly" | "yearly" — billing period sold
+  period         String
+  /// Days added to premiumUntil on confirmation (30 monthly / 365 yearly)
+  days           Int
+  /// Exact price charged in US cents (500/3000 · 1500/9000)
+  amountExpected Int
+  /// Confirmed received USD value in cents (0 until confirmed)
+  amountReceived Int       @default(0)
+  status         String    @default("pending")
+  /// "blockbee" — which processor issued the payment address
+  provider       String    @default("blockbee")
+  /// BlockBee coin ticker for this intention (e.g. polygon_usdt)
+  coin           String?
+  /// Unguessable per-intention nonce embedded in the callback URL and
+  /// verified on every IPN (binds a webhook to exactly this order)
+  callbackNonce  String?
+  /// BlockBee payment UUID — the cross-retry dedupe key echoed by every IPN
+  uuid           String?   @unique
+  /// On-chain transaction hash of the incoming payment (txid_in)
+  txHash         String?
+  /// Crypto amount paid, as received (string — never trust floats with money)
+  paidCoinAmount String?
+  /// Coin USD price at payment time (BlockBee `price` field), string
+  coinPriceUsd   String?
+  walletAddress  String
+  createdAt      DateTime  @default(now())
+  confirmedAt    DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
   @@index([status, createdAt])
   @@index([provider, status])
 }

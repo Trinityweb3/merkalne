@@ -16,10 +16,16 @@
 #
 # Allowed top-level entries in src/app (update this list ONLY when the layout
 # legitimately changes — e.g. a new app-level convention file):
-#   [locale]/           every page + the root layout (i18n)
+#   [locale]/           every page + the real root layout (i18n, owns <html>)
 #   api/                route handlers (locale-independent)
 #   globals.css         global stylesheet (the original template design,
 #                       restored after the de-slop redesign was rolled back)
+#   layout.tsx          pass-through ROOT layout (official next-intl pattern:
+#                       renders children only — [locale]/layout.tsx owns the
+#                       document so it can set lang/dir per locale)
+#   not-found.tsx       GLOBAL 404 outside the [locale] tree (renders its own
+#                       <html>, React 19 pattern; localized 404s live in
+#                       [locale]/not-found.tsx)
 #   robots.ts           robots.txt generator
 #   sitemap.ts          sitemap generator
 # ---------------------------------------------------------------------------
@@ -44,7 +50,7 @@ cd "${app_dir}"
 stale=""
 for entry in *; do
   case "${entry}" in
-    '[locale]'|api|globals.css|robots.ts|sitemap.ts) ;;
+    '[locale]'|api|globals.css|layout.tsx|not-found.tsx|robots.ts|sitemap.ts) ;;
     *) stale="${stale}  ${entry}\n" ;;
   esac
 done

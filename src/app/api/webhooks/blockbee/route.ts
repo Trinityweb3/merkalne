@@ -3,11 +3,16 @@
  * payout webhooks, in one endpoint.
  *
  * PAYMENT IPNs (custom payment flow): BlockBee calls back the callback_url
- * registered at intention time, which embeds `order_id` (our CryptoTopUp id)
- * and an unguessable `nonce` — both echoed back verbatim. Two webhook types:
- * pending=1 (payment seen in mempool — snapshotted, no credit) and pending=0
- * (confirmed on-chain — the campaign balance is credited, exactly once, and
- * the advertiser's referrer earns their 50% commission).
+ * registered at intention time, which embeds `order_id` (our own id) and an
+ * unguessable `nonce` — both echoed back verbatim. The order_id PREFIX
+ * routes the IPN to its domain:
+ *   • prem_m_/prem_y_/premplus_m_/premplus_y_ → Premium subscription
+ *     checkout (PremiumOrder) — on confirmation the user's plan and
+ *     premiumUntil are extended exactly once.
+ *   • anything else → Ads wallet top-up (CryptoTopUp) — the campaign wallet
+ *     is credited and the advertiser's referrer earns a 50% commission.
+ * Two webhook types per payment: pending=1 (payment seen in mempool —
+ * snapshotted, no credit) and pending=0 (confirmed on-chain).
  *
  * PAYOUT WEBHOOKS (configured per profile in the BlockBee dashboard): fired
  * when a payout reaches a terminal state (done | error | expired). On done
@@ -20,6 +25,7 @@
  *      public key) OR HMAC-SHA256 via the `token` param keyed with
  *      BLOCKBEE_IPN_SECRET. At least one must verify.
  *   3. order_id must resolve to a PENDING BlockBee intention in our DB
+ *      (PremiumOrder for prem_/premplus_ ids, CryptoTopUp otherwise)
  *   4. the per-intention nonce must match (constant-time)
  *   5. every event — accepted or rejected — lands in PaymentLog
  *
@@ -33,12 +39,9 @@ import { clientIp, rateLimit } from '@/lib/rate-limit'
 import { timingSafeEqualStr } from '@/lib/csrf'
 import { logPayment } from '@/lib/payment-log'
 import { confirmTopUp } from '@/lib/ads/topup'
-import {
-  ipnUsdCents,
-  reconstructPublicUrl,
-  sanitiseWebhookPayload,
-  verifyWebhookSignature,
-} from '@/lib/ads/blockbee'
+import { ipnUsdCents, reconstructPublicUrl, sanitiseWebhookPayload, verifyWebhookSignature } from '@/lib/ads/blockbee'
+import { confirmPremiumOrder, logPremiumPayment } from '@/lib/premium/orders'
+import { isPremiumOrderId } from '@/lib/premium/plan'
 
 export const dynamic = 'force-dynamic'
 
@@ -147,6 +150,12 @@ async function handle(req: Request): Promise<Response> {
   // 3. Route by payload shape: payment IPN carries uuid + address_in;
   //    payout webhook carries id + terminal status.
   if (params.has('uuid') && params.has('address_in')) {
+    // Payment domains are keyed on the order_id prefix: prem_/premplus_
+    // orders belong to the Premium checkout, everything else to Ads top-ups.
+    const orderId = params.get('order_id') ?? ''
+    if (isPremiumOrderId(orderId)) {
+      return handlePremiumIpn(params)
+    }
     return handlePaymentIpn(params)
   }
   if (params.has('id') && params.has('status')) {
@@ -160,6 +169,140 @@ async function handle(req: Request): Promise<Response> {
     detail: { reason: 'unrecognised_payload', payload: sanitiseWebhookPayload(params) },
   })
   return reject(400, 'unrecognised payload')
+}
+
+// ---------------------------------------------------------------------------
+// Payment IPN — Premium / Premium+ subscription orders (prem_/premplus_ ids)
+// ---------------------------------------------------------------------------
+
+async function handlePremiumIpn(params: URLSearchParams): Promise<Response> {
+  const uuid = params.get('uuid') ?? ''
+  const txHash = params.get('txid_in') ?? null
+  const orderId = params.get('order_id') ?? ''
+  const nonce = params.get('nonce') ?? ''
+  const isPending = params.get('pending') === '1'
+
+  // 3a. order_id must resolve to a pending BLOCKBEE premium order in our DB.
+  const order = orderId ? await db.premiumOrder.findUnique({ where: { id: orderId } }) : null
+  if (!order) {
+    await logPremiumPayment({
+      event: 'rejected',
+      ok: false,
+      orderId,
+      userId: '',
+      externalId: uuid,
+      detail: { reason: 'unknown_order', payload: sanitiseWebhookPayload(params) },
+    }).catch(() => undefined)
+    return ack() // ACK: retrying an unknown order changes nothing
+  }
+  if (order.provider !== 'blockbee') {
+    await logPremiumPayment({
+      event: 'rejected',
+      ok: false,
+      orderId: order.id,
+      userId: order.userId,
+      externalId: uuid,
+      detail: { reason: 'provider_mismatch', provider: order.provider },
+    })
+    return ack()
+  }
+
+  // 3b. Per-intention nonce — binds this webhook to exactly this row.
+  if (!order.callbackNonce || !nonce || !timingSafeEqualStr(nonce, order.callbackNonce)) {
+    await logPremiumPayment({
+      event: 'rejected',
+      ok: false,
+      orderId: order.id,
+      userId: order.userId,
+      externalId: uuid,
+      detail: { reason: 'nonce_mismatch', payload: sanitiseWebhookPayload(params) },
+    })
+    return ack()
+  }
+
+  // 3c. Only a PENDING order may be activated (idempotency guard).
+  if (order.status !== 'pending') {
+    await logPremiumPayment({
+      event: 'duplicate_ignored',
+      ok: true,
+      orderId: order.id,
+      userId: order.userId,
+      externalId: uuid,
+      amountCents: order.amountReceived,
+    })
+    return ack()
+  }
+
+  // 4. Snapshot the payment details on the row (audit trail).
+  const valueCoin = params.get('value_coin')
+  const price = params.get('price')
+  await db.premiumOrder
+    .update({
+      where: { id: order.id },
+      data: { uuid, txHash, paidCoinAmount: valueCoin, coinPriceUsd: price },
+    })
+    .catch(() => undefined)
+
+  if (isPending) {
+    await logPremiumPayment({
+      event: 'pending_detected',
+      ok: true,
+      orderId: order.id,
+      userId: order.userId,
+      externalId: uuid,
+      detail: { txHash, valueCoin },
+    })
+    return ack()
+  }
+
+  // Confirmed payment → extend the subscription (exactly once). A confirmed
+  // payment below the underpayment tolerance does NOT activate — logged for
+  // the operator, order stays pending for a possible follow-up payment.
+  const { cents, basis } = ipnUsdCents(params, order.amountExpected)
+  const result = await confirmPremiumOrder(order.id, { receivedCents: cents, txHash, uuid })
+
+  if (!result.ok) {
+    await logPremiumPayment({
+      event: 'credit_skipped',
+      ok: false,
+      orderId: order.id,
+      userId: order.userId,
+      externalId: uuid,
+      amountCents: cents,
+    })
+    return ack()
+  }
+
+  if (!result.activated) {
+    await logPremiumPayment({
+      event: result.reason === 'underpaid' ? 'underpaid' : 'duplicate_ignored',
+      ok: result.reason !== 'underpaid',
+      orderId: order.id,
+      userId: order.userId,
+      externalId: uuid,
+      amountCents: cents,
+      detail: { basis, expectedCents: order.amountExpected, txHash },
+    })
+    return ack()
+  }
+
+  await logPremiumPayment({
+    event: 'confirmed',
+    ok: true,
+    orderId: order.id,
+    userId: order.userId,
+    externalId: uuid,
+    amountCents: cents,
+    detail: {
+      txHash,
+      basis,
+      plan: result.plan,
+      until: result.until.toISOString(),
+      receivedCents: result.receivedCents,
+      target: 'subscription',
+    },
+  })
+  return ack()
 }
 
 // ---------------------------------------------------------------------------
@@ -262,7 +405,7 @@ async function handlePaymentIpn(params: URLSearchParams): Promise<Response> {
   if (!result.ok) {
     await logPayment({
       source: 'blockbee_ipn',
-      event: result.reason === 'no_target_campaign' ? 'no_target_campaign' : 'credit_skipped',
+      event: 'credit_skipped',
       ok: false,
       externalId: uuid,
       referenceId: topUp.id,
@@ -284,7 +427,7 @@ async function handlePaymentIpn(params: URLSearchParams): Promise<Response> {
       txHash,
       basis,
       creditedCents: result.creditedCents,
-      campaignId: result.campaignId,
+      target: 'wallet',
       referral: result.referral,
     },
   })

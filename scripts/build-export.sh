@@ -351,10 +351,22 @@ assert_file_contains "${ROOT}/src/components/site/post-list-client.tsx" 'slot="f
   "section pages: in-feed ad after the 3rd/6th post"
 assert_file_contains "${ROOT}/src/app/[locale]/[section]/[slug]/page.tsx" 'slot="article_bottom"' \
   "article pages: native ad before the comments"
-assert_file_contains "${ROOT}/src/app/[locale]/ads/page.tsx" "redirect('/auth?mode=login&next=/ads')" \
-  "/ads dashboard: auth-gated like the profile cabinet"
+assert_file_contains "${ROOT}/src/app/[locale]/ads/page.tsx" "'/profile/ads'" \
+  "/ads: permanent redirect into the profile cabinet"
+assert_file_contains "${ROOT}/src/app/[locale]/profile/ads/page.tsx" "redirect('/auth?mode=login&next=/profile/ads')" \
+  "/profile/ads dashboard: auth-gated like the profile cabinet"
 assert_file_contains "${ROOT}/src/app/api/ads/serve/route.ts" 'status: 204' \
   "serve API: 204 when nothing eligible (no empty boxes)"
+assert_file_contains "${ROOT}/src/app/api/ads/serve/route.ts" 'AD_SECTION_CONTEXTS' \
+  "serve API: section/locale targeting context"
+[ -f "${ROOT}/src/lib/ads/wallet.ts" ] && echo "  [ok]   ad-wallet allocation lib present (conditional-decrement)" \
+  || { echo "  [FAIL] src/lib/ads/wallet.ts missing"; fail=1; }
+[ -f "${ROOT}/src/lib/ads/targeting.ts" ] && echo "  [ok]   campaign targeting lib present (sections + locales)" \
+  || { echo "  [FAIL] src/lib/ads/targeting.ts missing"; fail=1; }
+[ -f "${ROOT}/src/app/api/ads/wallet/route.ts" ] && echo "  [ok]   /api/ads/wallet Wallet-tab route present" \
+  || { echo "  [FAIL] src/app/api/ads/wallet/route.ts missing"; fail=1; }
+assert_file_contains "${ROOT}/src/app/api/ads/campaigns/route.ts" 'insufficient_wallet' \
+  "campaign create: wallet gate enforced (no unfunded campaigns)"
 [ -f "${ROOT}/src/app/api/ads/topups/[id]/simulate/route.ts" ] && echo "  [ok]   simulate (demo) top-up route present" \
   || { echo "  [FAIL] ads topups simulate route missing"; fail=1; }
 [ -f "${ROOT}/src/app/api/admin/ads/topups/[id]/confirm/route.ts" ] && echo "  [ok]   admin manual-confirm route present" \
@@ -379,9 +391,17 @@ assert_file_contains "${ROOT}/src/app/api/webhooks/telegram-admin/route.ts" 'han
 assert_file_contains "${ROOT}/src/lib/bots/telegram.ts" 'telegramDownloadAsDataUrl' \
   "telegram lib: file download → data URL (CMS uploads)"
 assert_file_contains "${ROOT}/src/app/[locale]/about/page.tsx" 'getSiteOverrides' \
-  "about page: dynamic team/logo from SiteSettings"
-assert_file_contains "${ROOT}/src/app/[locale]/about/page.tsx" 'object-contain' \
-  "about page: operator logo block (legacy-safe Tailwind classes)"
+  "about page: dynamic team from SiteSettings"
+if grep -qF 'object-contain' "${ROOT}/src/app/[locale]/about/page.tsx"; then
+  echo "  [FAIL] about page: logo <img> is back in the visible UI (favicon-only branding)"
+  fail=1
+else
+  echo "  [ok]   about page: no logo <img> rendered (favicon-only branding)"
+fi
+[ -f "${ROOT}/src/app/api/favicon/route.ts" ] && echo "  [ok]   /api/favicon dynamic favicon route present" \
+  || { echo "  [FAIL] src/app/api/favicon/route.ts missing"; fail=1; }
+assert_file_contains "${ROOT}/src/app/layout.tsx" "icon: '/api/favicon'" \
+  "root layout: browser tab icon served by /api/favicon"
 # --- Legacy design restored (de-slop rolled back) -------------------------------
 [ ! -f "${ROOT}/src/app/globals.legacy.css" ] && echo "  [ok]   globals.legacy.css gone (restored as the live globals.css)" \
   || { echo "  [FAIL] src/app/globals.legacy.css still present — the design was rolled back, it must not ship twice"; fail=1; }
@@ -425,6 +445,78 @@ done
   || { echo "  [FAIL] scripts/test-ads-e2e.ts missing"; fail=1; }
 [ -f "${ROOT}/scripts/test-ads-auction.ts" ] && echo "  [ok]   auction unit test present" \
   || { echo "  [FAIL] scripts/test-ads-auction.ts missing"; fail=1; }
+
+# --- Premium subscriptions (stage-2 billing: checkout, paywall, quotas) --------
+assert_file_contains "${ROOT}/src/lib/premium/plan.ts" 'monthlyCents: 500' \
+  'premium: catalog price $5.00/month'
+assert_file_contains "${ROOT}/src/lib/premium/plan.ts" 'yearlyCents: 3000' \
+  'premium: catalog price $30.00/year (save 50%)'
+assert_file_contains "${ROOT}/src/lib/premium/plan.ts" 'monthlyCents: 1500' \
+  'premium: catalog price $15.00/month (Premium+)'
+assert_file_contains "${ROOT}/src/lib/premium/plan.ts" 'yearlyCents: 9000' \
+  'premium: catalog price $90.00/year (Premium+)'
+assert_file_contains "${ROOT}/src/lib/premium/plan.ts" "PREMIUM_ORDER_PREFIXES = ['prem_m_', 'prem_y_', 'premplus_m_', 'premplus_y_']" \
+  "premium: BlockBee order-id routing prefixes"
+assert_file_contains "${ROOT}/src/lib/premium/plan.ts" 'PERIOD_DAYS' \
+  "premium: 30/365-day period table"
+assert_file_contains "${ROOT}/src/lib/premium/orders.ts" 'UNDERPAYMENT_TOLERANCE' \
+  "premium: underpayment policy (<90% never activates)"
+assert_file_contains "${ROOT}/src/lib/premium/orders.ts" 'confirmPremiumOrder' \
+  "premium: exactly-once activation guard"
+assert_file_contains "${ROOT}/src/app/api/premium/checkout/route.ts" "z.enum(['premium', 'premium_plus'])" \
+  "premium: checkout accepts only the two paid plans"
+assert_file_contains "${ROOT}/src/app/api/premium/checkout/route.ts" 'PLAN_PRICING' \
+  "premium: checkout prices come from the server-side catalog (no client amounts)"
+[ -f "${ROOT}/src/app/api/premium/checkout/[id]/route.ts" ] && echo "  [ok]   premium: order polling route present" \
+  || { echo "  [FAIL] src/app/api/premium/checkout/[id]/route.ts missing"; fail=1; }
+assert_file_contains "${ROOT}/src/app/api/webhooks/blockbee/route.ts" 'isPremiumOrderId' \
+  "premium: IPN webhook routes prem_/premplus_ orders separately from ads"
+assert_file_contains "${ROOT}/src/app/api/webhooks/blockbee/route.ts" 'confirmPremiumOrder' \
+  "premium: webhook confirms subscriptions exactly once"
+assert_file_contains "${ROOT}/src/lib/bots/dispatch.ts" "plan: { in: ['premium', 'premium_plus'] }" \
+  "premium: dispatch paywall — only active paid plans receive job alerts"
+assert_file_contains "${ROOT}/src/app/api/webhooks/telegram/route.ts" 'Job alerts are a Premium feature' \
+  "premium: /alerts on rejection message ships"
+assert_file_contains "${ROOT}/src/app/api/webhooks/telegram/route.ts" 'planDisplayName' \
+  "premium: /whoami shows the plan"
+assert_file_contains "${ROOT}/src/app/api/posts/route.ts" 'isPremiumPlusActive' \
+  "premium+: editorial publishing gate"
+assert_file_contains "${ROOT}/src/app/api/posts/route.ts" 'EDITORIAL_MONTHLY_QUOTA' \
+  "premium+: monthly editorial quota enforced"
+assert_file_contains "${ROOT}/src/components/site/site-header.tsx" 'premiumActive' \
+  "premium: header reflects the subscription status"
+assert_file_contains "${ROOT}/src/components/providers/session-provider.tsx" 'sessionPremiumActive' \
+  "premium: client-side entitlement helper"
+assert_file_contains "${ROOT}/src/components/site/pricing-plans.tsx" 'PLAN_PRICING' \
+  "premium: pricing page renders from the server catalog"
+assert_file_contains "${ROOT}/src/components/site/pricing-plans.tsx" 'checkoutPay' \
+  "premium: BlockBee checkout modal ships"
+assert_file_contains "${ROOT}/prisma/schema.prisma" 'model PremiumOrder' \
+  "premium: PremiumOrder model in the schema"
+assert_file_contains "${ROOT}/prisma/schema.sqlite.prisma" 'model PremiumOrder' \
+  "premium: sqlite schema mirror carries PremiumOrder"
+[ -f "${ROOT}/prisma/migrations/0009_premium_orders/migration.sql" ] && echo "  [ok]   premium: migration 0009 present" \
+  || { echo "  [FAIL] prisma/migrations/0009_premium_orders/migration.sql missing"; fail=1; }
+[ -f "${ROOT}/scripts/test-premium-e2e.ts" ] && echo "  [ok]   premium e2e suite present" \
+  || { echo "  [FAIL] scripts/test-premium-e2e.ts missing"; fail=1; }
+[ -f "${ROOT}/scripts/run-premium-e2e.sh" ] && echo "  [ok]   premium e2e runner present" \
+  || { echo "  [FAIL] scripts/run-premium-e2e.sh missing"; fail=1; }
+assert_file_contains "${ROOT}/package.json" 'premium:grant' \
+  "premium: operator grant CLI registered"
+[ -f "${ROOT}/scripts/grant-premium.ts" ] && echo "  [ok]   premium: grant/revoke CLI present" \
+  || { echo "  [FAIL] scripts/grant-premium.ts missing"; fail=1; }
+# i18n: premium namespace + header.premiumActive in EVERY dictionary
+prem_i18n_ok=0
+for dict in "${ROOT}"/src/i18n/messages/*.ts; do
+  dict_name="$(basename "${dict}")"
+  if grep -q 'premium: {' "${dict}" && grep -q 'premiumActive:' "${dict}"; then
+    prem_i18n_ok=$((prem_i18n_ok + 1))
+  else
+    echo "  [FAIL] i18n ${dict_name}: premium namespace / header.premiumActive missing"
+    fail=1
+  fi
+done
+[ "${prem_i18n_ok}" -eq 20 ] && echo "  [ok]   premium namespace present in all 20 dictionaries"
 # Run the same stale-merge guard the Docker build runs — the sandbox tree
 # itself must be clean before it is bundled.
 if sh "${ROOT}/docker/check-app-tree.sh" >/dev/null 2>&1; then
@@ -659,6 +751,45 @@ assert_file_contains "${VERIFY_DIR}/merklane/src/i18n/messages/ja.ts" 'adSlot: {
   "archive: ja dictionary carries the ads namespaces"
 [ -f "${VERIFY_DIR}/merklane/scripts/test-ads-e2e.ts" ] && echo "  [ok]   archive: ads e2e suite ships" \
   || { echo "  [FAIL] archive: scripts/test-ads-e2e.ts MISSING"; archive_fail=1; }
+# --- Premium subscriptions (in-archive mirror of the pre-flight checks) --------
+[ -f "${VERIFY_DIR}/merklane/src/lib/premium/plan.ts" ] && echo "  [ok]   archive: premium plan catalog ships" \
+  || { echo "  [FAIL] archive: src/lib/premium/plan.ts MISSING"; archive_fail=1; }
+assert_file_contains "${VERIFY_DIR}/merklane/src/lib/premium/plan.ts" 'monthlyCents: 500' \
+  'archive: $5.00/month premium price ships'
+assert_file_contains "${VERIFY_DIR}/merklane/src/lib/premium/plan.ts" 'yearlyCents: 9000' \
+  'archive: $90.00/year Premium+ price ships'
+[ -f "${VERIFY_DIR}/merklane/src/lib/premium/orders.ts" ] && echo "  [ok]   archive: premium orders lib ships" \
+  || { echo "  [FAIL] archive: src/lib/premium/orders.ts MISSING"; archive_fail=1; }
+[ -f "${VERIFY_DIR}/merklane/src/app/api/premium/checkout/route.ts" ] && echo "  [ok]   archive: premium checkout route ships" \
+  || { echo "  [FAIL] archive: api/premium/checkout/route.ts MISSING"; archive_fail=1; }
+[ -f "${VERIFY_DIR}/merklane/src/app/api/premium/checkout/[id]/route.ts" ] && echo "  [ok]   archive: premium order polling route ships" \
+  || { echo "  [FAIL] archive: api/premium/checkout/[id]/route.ts MISSING"; archive_fail=1; }
+assert_file_contains "${VERIFY_DIR}/merklane/src/app/api/webhooks/blockbee/route.ts" 'isPremiumOrderId' \
+  "archive: webhook distinguishes prem_/premplus_ from ads orders"
+assert_file_contains "${VERIFY_DIR}/merklane/src/lib/bots/dispatch.ts" "plan: { in: ['premium', 'premium_plus'] }" \
+  "archive: dispatch paywall ships (free users never alerted)"
+assert_file_contains "${VERIFY_DIR}/merklane/src/app/api/webhooks/telegram/route.ts" 'Job alerts are a Premium feature' \
+  "archive: /alerts on paywall message ships"
+assert_file_contains "${VERIFY_DIR}/merklane/src/app/api/posts/route.ts" 'EDITORIAL_MONTHLY_QUOTA' \
+  "archive: Premium+ editorial quota ships"
+[ -f "${VERIFY_DIR}/merklane/prisma/migrations/0009_premium_orders/migration.sql" ] && echo "  [ok]   archive: migration 0009 ships" \
+  || { echo "  [FAIL] archive: prisma/migrations/0009_premium_orders MISSING"; archive_fail=1; }
+[ -f "${VERIFY_DIR}/merklane/scripts/test-premium-e2e.ts" ] && echo "  [ok]   archive: premium e2e suite ships" \
+  || { echo "  [FAIL] archive: scripts/test-premium-e2e.ts MISSING"; archive_fail=1; }
+[ -f "${VERIFY_DIR}/merklane/scripts/run-premium-e2e.sh" ] && echo "  [ok]   archive: premium e2e runner ships" \
+  || { echo "  [FAIL] archive: scripts/run-premium-e2e.sh MISSING"; archive_fail=1; }
+assert_file_contains "${VERIFY_DIR}/merklane/src/i18n/messages/ru.ts" 'premium: {' \
+  "archive: ru dictionary carries the premium namespace"
+assert_file_contains "${VERIFY_DIR}/merklane/src/i18n/messages/ja.ts" 'premium: {' \
+  "archive: ja dictionary carries the premium namespace"
+archive_prem_i18n_ok=0
+for dict in "${VERIFY_DIR}"/merklane/src/i18n/messages/*.ts; do
+  if grep -q 'premium: {' "${dict}" && grep -q 'premiumActive:' "${dict}"; then
+    archive_prem_i18n_ok=$((archive_prem_i18n_ok + 1))
+  fi
+done
+[ "${archive_prem_i18n_ok}" -eq 20 ] && echo "  [ok]   archive: premium namespace in all 20 dictionaries" \
+  || { echo "  [FAIL] archive: premium namespace in only ${archive_prem_i18n_ok}/20 dictionaries"; archive_fail=1; }
 # Cross-check: every file listed in the archive MANIFEST exists after extraction
 MANIFEST_COUNT="$(wc -l < "${VERIFY_DIR}/merklane/MANIFEST" | tr -d ' ')"
 MISSING_IN_ARCHIVE="$(cd "${VERIFY_DIR}/merklane" && while IFS= read -r f; do [ -f "${f}" ] || echo "${f}"; done < MANIFEST | head -5)"

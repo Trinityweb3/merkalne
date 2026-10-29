@@ -1,13 +1,15 @@
 /**
  * Merklane Ads — crypto top-up flow.
  *
- * An advertiser creates a pending CryptoTopUp for a target campaign and is
+ * An advertiser creates a pending CryptoTopUp from the Wallet tab and is
  * shown a UNIQUE deposit address together with the expected amount. Once
- * the incoming payment is confirmed the top-up flips to "confirmed" and the
- * amount is credited to the campaign balance — exactly once (the status
- * field guards the double credit) — and, when the advertiser was referred,
- * 50% of the credited amount lands in the referrer's referralBalance inside
- * the same transaction.
+ * the incoming payment is confirmed the top-up flips to "confirmed" and
+ * the amount is credited to the advertiser's WALLET (User.adBalance) —
+ * exactly once (the status field guards the double credit) — and, when the
+ * advertiser was referred, 50% of the credited amount lands in the
+ * referrer's referralBalance inside the same transaction. Campaign budgets
+ * are allocated from the wallet separately (campaign create / "add funds"),
+ * so deposits work even before any campaign exists.
  *
  * Providers (ADS_TOPUP_MODE, auto-resolved — see topUpMode()):
  *   • blockbee — production. The BlockBee processor (src/lib/ads/blockbee.ts)
@@ -64,21 +66,16 @@ export function topUpMode(): TopUpMode {
 
 export interface CreditResult {
   ok: boolean
-  reason?: 'not_found' | 'already_confirmed' | 'no_target_campaign'
+  reason?: 'not_found' | 'already_confirmed'
   creditedCents?: number
-  campaignId?: string
   /** Referral commission paid on this confirmation (null = no referrer / sub-cent) */
   referral?: { referrerId: string; commissionCents: number } | null
 }
 
 /**
- * Confirm a pending top-up and credit the target campaign — exactly once.
- * The whole mutation runs inside a transaction whose first statement flips
- * the status atomically (updateMany count 0 → someone confirmed first).
- *
- * When the linked campaign was deleted (SetNull) the advertiser's newest
- * campaign is credited instead; an advertiser with no campaign at all cannot
- * be credited and the top-up stays pending.
+ * Confirm a pending top-up and credit the advertiser's WALLET — exactly
+ * once. The whole mutation runs inside a transaction whose first statement
+ * flips the status atomically (updateMany count 0 → someone confirmed first).
  *
  * The referral commission (50% of the credited amount to the advertiser's
  * referrer, if any) is written inside the SAME transaction — the atomic
@@ -112,32 +109,16 @@ export async function confirmTopUp(
     const topUp = (await tx.cryptoTopUp.findUnique({ where: { id: topUpId } }))!
     const received = Math.max(0, Math.floor(opts?.receivedCents ?? topUp.amountExpected))
 
-    // Resolve the target campaign: the linked one, else the newest campaign.
-    let campaignId = topUp.campaignId
-    if (!campaignId) {
-      const newest = await tx.adCampaign.findFirst({
-        where: { advertiserId: topUp.advertiserId },
-        orderBy: { createdAt: 'desc' },
-        select: { id: true },
-      })
-      campaignId = newest?.id ?? null
-    }
-    if (!campaignId) {
-      // Roll the flip back: nothing can be credited.
-      await tx.cryptoTopUp.update({
-        where: { id: topUpId },
-        data: { status: 'pending', confirmedAt: null },
-      })
-      return { ok: false, reason: 'no_target_campaign' } satisfies CreditResult
-    }
-
     await tx.cryptoTopUp.update({
       where: { id: topUpId },
-      data: { amountReceived: received, campaignId },
+      data: { amountReceived: received },
     })
-    await tx.adCampaign.update({
-      where: { id: campaignId },
-      data: { balance: { increment: received } },
+    // The credit lands in the advertiser WALLET — campaign budgets are
+    // allocated from it later (campaign create / "add funds"), so a deposit
+    // is never blocked on a campaign existing.
+    await tx.user.update({
+      where: { id: topUp.advertiserId },
+      data: { adBalance: { increment: received } },
     })
 
     // Referral commission — same transaction, guarded by the flip above.
@@ -152,7 +133,6 @@ export async function confirmTopUp(
       topUpId,
       advertiserId: topUp.advertiserId,
       receivedCents: received,
-      campaignId,
       txHash: opts?.txHash ?? null,
       uuid: opts?.uuid ?? null,
     })
@@ -160,7 +140,6 @@ export async function confirmTopUp(
     return {
       ok: true,
       creditedCents: received,
-      campaignId,
       referral: referral ? { referrerId: referral.referrerId, commissionCents: referral.commissionCents } : null,
     } satisfies CreditResult
   })
@@ -173,7 +152,6 @@ function writeConfirmLog(
     topUpId: string
     advertiserId: string
     receivedCents: number
-    campaignId: string
     txHash: string | null
     uuid: string | null
   },
@@ -187,7 +165,7 @@ function writeConfirmLog(
       referenceId: entry.topUpId,
       userId: entry.advertiserId,
       amountCents: entry.receivedCents,
-      detail: { campaignId: entry.campaignId, provider: entry.source } as never,
+      detail: { target: 'wallet', provider: entry.source } as never,
     },
   })
 }

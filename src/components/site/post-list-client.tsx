@@ -102,7 +102,7 @@ export function PostListClient({
                 distinct from real listings, never rendered when the auction
                 is empty (the slot collapses to nothing). */}
             {(i + 1 === 3 || i + 1 === 6) && i + 1 < posts.length ? (
-              <AdSlot slot="feed" variant="feed" />
+              <AdSlot slot="feed" variant="feed" section={section} />
             ) : null}
           </Fragment>
         ))}

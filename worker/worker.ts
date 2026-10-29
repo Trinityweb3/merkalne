@@ -80,7 +80,7 @@ async function tickDispatch(): Promise<void> {
     }
     const retry = await retryFailedNotifications()
     if (retry.retried > 0) {
-      log('dispatch', `retried ${retry.retried} → sent ${retry.sent}, failed ${retry.failed}`)
+      log('dispatch', `retried ${retry.retried} → sent ${retry.sent}, failed ${retry.failed}, skipped ${retry.skipped}`)
     }
   } catch (err) {
     log('dispatch', `error: ${err instanceof Error ? err.message : String(err)}`)

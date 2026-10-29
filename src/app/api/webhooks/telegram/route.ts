@@ -4,6 +4,7 @@ import { rateLimit } from '@/lib/rate-limit'
 import { sha256 } from '@/lib/csrf'
 import { botEnv, telegramAdminIds, telegramWebhookConfigured } from '@/lib/bots/config'
 import { parseTelegramCommand, telegramSendMessage, type TelegramUpdate } from '@/lib/bots/telegram'
+import { isPremiumActive, planDisplayName } from '@/lib/premium/plan'
 
 /**
  * POST /api/webhooks/telegram — the user-facing NOTIFIER BOT webhook.
@@ -122,9 +123,19 @@ export async function POST(req: Request) {
           await reply(chatId, 'This chat is not linked. Open the alerts page on Merklane and send me the /start code it shows.')
         } else {
           const user = await db.user.findUnique({ where: { id: link.userId }, select: { email: true, plan: true, premiumUntil: true } })
+          // Plan line always shows one of: Premium+ / Premium / Free (with a
+          // clear expired hint), so users know exactly where they stand.
+          const planLine = user
+            ? user.plan === 'premium_plus'
+              ? `Plan: ${planDisplayName(user)}`
+              : user.plan === 'premium'
+                ? `Plan: ${planDisplayName(user)}`
+                : 'Plan: Free'
+            : 'Plan: unknown'
+          const active = user ? isPremiumActive(user) : false
           await reply(
             chatId,
-            `Linked account: ${user?.email ?? 'unknown'}\nPlan: ${user?.plan ?? 'unknown'}${user?.premiumUntil ? ` (until ${user.premiumUntil.toISOString().slice(0, 10)})` : ''}\nAlerts: ${link.notificationsEnabled ? 'on' : 'off'}`,
+            `Linked account: ${user?.email ?? 'unknown'}\n${planLine}${user?.premiumUntil ? ` (until ${user.premiumUntil.toISOString().slice(0, 10)})` : ''}\nAlerts: ${link.notificationsEnabled ? (active ? 'on' : 'blocked — Premium required') : 'off'}`,
           )
         }
         break
@@ -141,6 +152,25 @@ export async function POST(req: Request) {
         if (!link) {
           await reply(chatId, 'This chat is not linked yet — open the alerts page on Merklane for the /start code.')
           break
+        }
+        // PAYWALL: only active Premium / Premium+ subscribers may turn job
+        // alerts on. Pausing (/alerts off) stays free — a user must always be
+        // able to silence us.
+        if (enable) {
+          const user = await db.user.findUnique({
+            where: { id: link.userId },
+            select: { plan: true, premiumUntil: true },
+          })
+          if (!user || !isPremiumActive(user)) {
+            await db.ingestionLog.create({
+              data: { source: 'telegram', action: 'alerts-on-blocked-no-premium', ok: false, actor: link.userId, detail: `chat ${chatId}` },
+            }).catch(() => undefined)
+            await reply(
+              chatId,
+              '🔒 Job alerts are a Premium feature. Upgrade at merklane.com/premium',
+            )
+            break
+          }
         }
         await db.telegramLink.update({ where: { id: link.id }, data: { notificationsEnabled: enable } })
         await reply(chatId, enable ? '🔔 Telegram alerts enabled.' : '🔕 Telegram alerts paused (you still get email if Premium is active).')

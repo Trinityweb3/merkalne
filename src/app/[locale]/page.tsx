@@ -66,7 +66,7 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
         {/* Auction banner: a compact sponsored strip right below the hero.
             Renders nothing while the auction has no eligible campaign — no
             empty boxes. */}
-        <AdSlot slot="home_banner" variant="banner" />
+        <AdSlot slot="home_banner" variant="banner" section="home" />
 
         {sections.map((section, i) => (
           <section className="section-block" key={section} aria-labelledby={`section-${section}`}>
@@ -83,6 +83,7 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
               posts={rails[i].map(serializePost)}
               homeGrid
               feedAdAfter={i === 0 ? 3 : undefined}
+              adSection={i === 0 ? sections[0] : undefined}
               emptyTitle={tb('sectionNoPosts', { section: SECTION_META[section].title })}
               emptyText={section === 'blog' ? ts('emptyBlog') : ts('emptyEditorial')}
             />

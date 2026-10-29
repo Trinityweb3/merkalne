@@ -23,7 +23,9 @@ import {
 export const dynamic = 'force-dynamic'
 
 const createSchema = z.object({
-  campaignId: z.string().trim().min(1).max(64),
+  /** @deprecated — deposits credit the ad WALLET, not a campaign. Accepted
+   *  for backward compatibility with older dashboard bundles, ignored. */
+  campaignId: z.string().trim().min(1).max(64).optional(),
   amountCents: z.coerce.number().int().min(TOPUP_MIN_CENTS).max(TOPUP_MAX_CENTS),
   /** BlockBee ticker (blockbee mode only) — validated against the allowlist */
   coin: z
@@ -36,13 +38,15 @@ const createSchema = z.object({
 })
 
 /**
- * POST /api/ads/topups — start a crypto top-up: mints a pending intention
- * for the advertiser's own campaign and returns the deposit address.
+ * POST /api/ads/topups — start a crypto top-up of the AD WALLET: mints a
+ * pending intention for the advertiser and returns the deposit address.
+ * No campaign is needed — the money lands in User.adBalance once confirmed
+ * and campaign budgets are allocated from it later.
  *
  * blockbee mode: the address is issued by the BlockBee processor
  * (GET /{coin}/create/) — hosted, AML-screened, single-intention (the
  * callback URL embeds order_id + an unguessable nonce). The IPN webhook at
- * /api/webhooks/blockbee credits the campaign once the payment confirms
+ * /api/webhooks/blockbee credits the wallet once the payment confirms
  * on-chain. The dashboard polls GET /api/ads/topups/[id] until then.
  *
  * manual/simulate modes (fallback / testing): the deterministic mock-wallet
@@ -61,13 +65,6 @@ export async function POST(req: Request) {
     const parsed = createSchema.safeParse(await req.json().catch(() => null))
     if (!parsed.success) {
       return jsonError('Invalid top-up request', 400, { issues: parsed.error.issues })
-    }
-
-    const campaign = await db.adCampaign.findUnique({
-      where: { id: parsed.data.campaignId },
-    })
-    if (!campaign || campaign.advertiserId !== session.user.id) {
-      return jsonError('Campaign not found', 404)
     }
 
     const mode = topUpMode()
@@ -105,7 +102,6 @@ export async function POST(req: Request) {
         data: {
           id,
           advertiserId: session.user.id,
-          campaignId: campaign.id,
           walletAddress: '',
           amountExpected: parsed.data.amountCents,
           status: 'pending',
@@ -151,7 +147,6 @@ export async function POST(req: Request) {
       data: {
         id,
         advertiserId: session.user.id,
-        campaignId: campaign.id,
         // The id is supplied (uuid) so the deposit address can be derived
         // from it BEFORE the row is written — one insert, no placeholder dance.
         walletAddress: deriveDepositAddress(id),

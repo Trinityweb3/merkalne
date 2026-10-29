@@ -16,8 +16,9 @@ const confirmSchema = z.object({
  * POST /api/admin/ads/topups/[id]/confirm — the OPERATOR path for marking a
  * crypto deposit as received (ADS_TOPUP_MODE=manual, the default). After
  * checking the wallet on-chain (or in the provider console), an admin
- * confirms; the campaign balance is credited exactly once. Optionally the
- * actually-received amount can be passed to credit a partial/over payment.
+ * confirms; the advertiser's ad wallet is credited exactly once. Optionally
+ * the actually-received amount can be passed to credit a partial/over
+ * payment.
  */
 export async function POST(req: Request, ctx: { params: Promise<{ id: string }> }) {
   try {
@@ -40,14 +41,13 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
       return jsonError(
         result.reason === 'already_confirmed'
           ? 'This top-up was already confirmed.'
-          : 'No campaign to credit.',
+          : 'Top-up not found.',
         400,
       )
     }
     return jsonOk({
       status: 'confirmed',
       creditedCents: result.creditedCents,
-      campaignId: result.campaignId,
     })
   } catch (err) {
     return handleRouteError(err)

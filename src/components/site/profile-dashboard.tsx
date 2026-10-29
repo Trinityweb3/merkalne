@@ -11,6 +11,7 @@ import {
   LayoutDashboard,
   Lock,
   LogIn,
+  Megaphone,
   Monitor,
   PenLine,
   Send,
@@ -25,6 +26,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Separator } from '@/components/ui/separator'
 import { useSession, type SessionUser } from '@/components/providers/session-provider'
+import { AdsDashboard } from '@/components/site/ads/ads-dashboard'
 import { api } from '@/lib/api-client'
 import type { SerializedPost } from '@/lib/posts'
 import { formatDate, timeAgo } from '@/lib/utils'
@@ -66,22 +68,41 @@ interface ReferralData {
   withdraw: { enabled: boolean; coins: string[]; minCents: number }
 }
 
-type Tab = 'overview' | 'bookmarks' | 'posts' | 'security' | 'compose' | 'referral'
+type Tab = 'overview' | 'bookmarks' | 'posts' | 'security' | 'compose' | 'referral' | 'ads'
 
-const TABS: { key: Tab; label: string; icon: React.ComponentType<{ width?: number; height?: number }> }[] = [
+interface TabDef {
+  key: Tab
+  label: string
+  icon: React.ComponentType<{ width?: number; height?: number }>
+  /** Featured entry — accent colour + "New" pill in the sidebar. */
+  highlight?: boolean
+}
+
+const TABS: TabDef[] = [
   { key: 'overview', label: 'Overview', icon: LayoutDashboard },
   { key: 'bookmarks', label: 'Saved posts', icon: Bookmark },
   { key: 'posts', label: 'My posts', icon: FileText },
   { key: 'referral', label: 'Referrals', icon: Gift },
+  { key: 'ads', label: 'Merklane ADS', icon: Megaphone, highlight: true },
   { key: 'security', label: 'Security', icon: ShieldCheck },
   { key: 'compose', label: 'Write a Blog post', icon: PenLine },
 ]
 
-export function ProfileDashboard() {
+const TAB_KEYS = TABS.map((tab) => tab.key)
+
+export function ProfileDashboard({ initialTab }: { initialTab?: Tab }) {
   const router = useRouter()
   const searchParams = useSearchParams()
   const { user, refresh } = useSession()
-  const [tab, setTab] = useState<Tab>((searchParams.get('tab') as Tab) ?? (searchParams.get('compose') === '1' ? 'compose' : 'overview'))
+  // URL ?tab= wins (validated against the known keys — junk falls through),
+  // then the route-provided default (/profile/ads opens on the ads tab),
+  // then the legacy ?compose=1 deep link, else Overview.
+  const urlTab = searchParams.get('tab') as Tab | null
+  const [tab, setTab] = useState<Tab>(
+    urlTab && (TAB_KEYS as string[]).includes(urlTab)
+      ? urlTab
+      : (initialTab ?? (searchParams.get('compose') === '1' ? 'compose' : 'overview')),
+  )
 
   // Data states
   const [stats, setStats] = useState<{ posts: number; bookmarks: number; comments: number } | null>(null)
@@ -208,7 +229,7 @@ export function ProfileDashboard() {
             </p>
           </div>
           <nav className="account-nav">
-            {TABS.map(({ key, label, icon: Icon }) => (
+            {TABS.map(({ key, label, icon: Icon, highlight }) => (
               <button
                 key={key}
                 type="button"
@@ -217,12 +238,13 @@ export function ProfileDashboard() {
                   display: 'flex',
                   alignItems: 'center',
                   gap: 12,
-                  color: tab === key ? 'var(--foreground)' : 'var(--muted-foreground)',
+                  color: tab === key ? 'var(--foreground)' : highlight ? 'var(--link)' : 'var(--muted-foreground)',
                   background: 'none',
                   border: 0,
                   borderRadius: 7,
                   padding: '11px 12px',
                   fontSize: '0.875rem',
+                  fontWeight: highlight ? 600 : undefined,
                   cursor: 'pointer',
                   width: '100%',
                   textAlign: 'left',
@@ -232,7 +254,25 @@ export function ProfileDashboard() {
                   router.replace(`/profile?tab=${key}`, { scroll: false })
                 }}
               >
-                <Icon width={16} height={16} /> {label}
+                <Icon width={16} height={16} /> <span style={{ flex: 1 }}>{label}</span>
+                {highlight ? (
+                  <span
+                    style={{
+                      flexShrink: 0,
+                      fontSize: '0.6rem',
+                      fontWeight: 700,
+                      letterSpacing: '0.06em',
+                      textTransform: 'uppercase',
+                      color: '#081219',
+                      background: 'var(--link)',
+                      borderRadius: 999,
+                      padding: '2px 7px',
+                      lineHeight: 1.5,
+                    }}
+                  >
+                    New
+                  </span>
+                ) : null}
               </button>
             ))}
           </nav>
@@ -274,6 +314,7 @@ export function ProfileDashboard() {
           {tab === 'referral' ? (
             <ReferralTab data={referral} onChanged={loadReferral} />
           ) : null}
+          {tab === 'ads' ? <AdsDashboard /> : null}
         </div>
       </div>
     </div>

@@ -9,12 +9,12 @@ export const dynamic = 'force-dynamic'
 /**
  * POST /api/ads/topups/[id]/simulate — DEMO PATH ONLY (ADS_TOPUP_MODE=simulate).
  *
- * Marks the advertiser's own PENDING top-up as paid and credits the campaign
- * — without any real chain observation. This exists so the whole auction
- * loop can be demonstrated and tested end-to-end while no payment provider
- * is wired in. The route hard-fails with 403 whenever ADS_TOPUP_MODE is
- * "manual" (the default, production-safe mode — there an ADMIN confirms
- * deposits via /api/admin/ads/topups/[id]/confirm instead).
+ * Marks the advertiser's own PENDING top-up as paid and credits the ad
+ * wallet — without any real chain observation. This exists so the whole
+ * auction loop can be demonstrated and tested end-to-end while no payment
+ * provider is wired in. The route hard-fails with 403 whenever
+ * ADS_TOPUP_MODE is not "simulate" (in "manual" an ADMIN confirms deposits
+ * via /api/admin/ads/topups/[id]/confirm instead).
  */
 export async function POST(req: Request, ctx: { params: Promise<{ id: string }> }) {
   try {
@@ -41,7 +41,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
       return jsonError(
         result.reason === 'already_confirmed'
           ? 'This top-up is already confirmed.'
-          : 'No campaign to credit — create one first.',
+          : 'Top-up not found.',
         400,
       )
     }

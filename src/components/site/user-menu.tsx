@@ -70,7 +70,7 @@ export function UserMenu() {
             </Link>
           </DropdownMenuItem>
           <DropdownMenuItem asChild>
-            <Link href="/ads">
+            <Link href="/profile/ads">
               <Megaphone /> Merklane Ads
             </Link>
           </DropdownMenuItem>

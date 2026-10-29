@@ -43,7 +43,7 @@ export default function RecruiterPage() {
               See the full plan comparison
             </Button>
           </Link>
-          <Link href="/ads">
+          <Link href="/profile/ads">
             <Button variant="outline">Advertise instead — Merklane Ads</Button>
           </Link>
         </div>

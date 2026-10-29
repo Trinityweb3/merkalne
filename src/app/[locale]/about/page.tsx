@@ -120,8 +120,9 @@ export default async function AboutPage({ params }: PageProps) {
   const { locale } = await params
   const t = await getTranslations({ locale, namespace: 'about' })
   const latest = await getLatestDailyStats()
-  // Operator-managed content (Telegram admin bot uploads): site logo + team
-  // avatar/bio overrides. 60 s cache — safe to read on every request.
+  // Operator-managed content (Telegram admin bot uploads): team avatar/bio
+  // overrides. 60 s cache — safe to read on every request. (The site logo is
+  // no longer rendered here — it lives only in the favicon, /api/favicon.)
   const overrides = await getSiteOverrides()
   const teamOverride = (key: TeamMember['settingKey']): TeamMemberOverride =>
     overrides.team[key] ?? {}
@@ -136,17 +137,6 @@ export default async function AboutPage({ params }: PageProps) {
     >
       <div className="page-head">
         <div>
-          {/* Operator logo (Telegram bot "Change logo") — hidden until the
-              first upload lands, so the page stays honest by default. */}
-          {overrides.logo ? (
-            <img
-              className="mb-5 block h-22 w-22 rounded-lg bg-card p-2 object-contain"
-              src={overrides.logo}
-              alt="Merklane"
-              width={160}
-              height={160}
-            />
-          ) : null}
           <h1>{t('title')}</h1>
           <p>{t('intro')}</p>
         </div>

@@ -3,6 +3,7 @@ import { redirect } from 'next/navigation'
 import { getSession } from '@/lib/auth'
 import { db } from '@/lib/db'
 import { telegramEnabled } from '@/lib/bots/config'
+import { isPremiumActive } from '@/lib/premium/plan'
 import { AlertsManager } from '@/components/site/alerts-manager'
 
 export const metadata: Metadata = {
@@ -24,9 +25,8 @@ export default async function AlertsPage() {
 
   const telegramLink = await db.telegramLink.findUnique({ where: { userId: session.user.id } })
 
-  const premiumActive =
-    session.user.plan === 'premium' &&
-    (!session.user.premiumUntil || session.user.premiumUntil > new Date())
+  // Shared entitlement gate — Premium OR Premium+, never free.
+  const premiumActive = isPremiumActive(session.user)
 
   return (
     <AlertsManager

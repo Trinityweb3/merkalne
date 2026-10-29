@@ -37,8 +37,8 @@ Built with **Next.js 16 (App Router) · TypeScript · Tailwind CSS 4 · Prisma �
 - Auth screens: login/register with Google, GitHub, email/password and magic links
 - Profile cabinet: overview, bookmarks, my posts, security (password, email change, session management) and the free Blog composer
 - `/ads` — advertiser dashboard: create campaigns, watch the weighted auction spend live, top up with crypto (auth-gated; anonymous visitors land on the login screen)
-- `/premium` pricing page (monthly/yearly toggle, FAQ) wired to an honest "payments not launched" API
-- Global chrome: sticky header with 20-language picker (incl. RTL), theme toggle, mobile drawer, donation side-tab, cookie consent with granular preferences, first-visit safety notice, persistent footer safety text
+- `/premium` pricing page: Monthly/Yearly toggle (yearly = save 50%), plan comparison cards and a live BlockBee crypto checkout modal (coin picker → hosted address → on-chain confirmation polling → plan activates)
+- Global chrome: sticky header with 20-language picker (incl. RTL), theme toggle, mobile drawer, donation side-tab, cookie consent with granular preferences, first-visit safety notice, persistent footer safety text — the header's Premium link flips to “Premium Active ✓” while a paid subscription runs
 - **About page as a live investor page**: team cards (initials avatars, no assets needed), daily statistics snapshot ("Merklane as of …"), monthly recap video slots (click-to-load YouTube embeds) and a pitch-deck card — see [About page: team & daily statistics](#about-page-team--daily-statistics)
 
 **Backend**
@@ -46,7 +46,7 @@ Built with **Next.js 16 (App Router) · TypeScript · Tailwind CSS 4 · Prisma �
 - PostgreSQL + Prisma with committed SQL migrations
 - Custom authentication: opaque server-side sessions (hashed tokens, HttpOnly cookies, rolling refresh, per-device revocation), bcrypt (cost 12) passwords, single-use hashed email-verification / magic-link / password-reset tokens
 - Google & GitHub OAuth 2.0 (authorization-code flow, HMAC-signed expiring state, account linking by verified email)
-- Every interactive element wired to a real endpoint — no dead buttons; features that are not live yet answer honestly (e.g. Premium checkout returns 503 with an explanation)
+- Every interactive element wired to a real endpoint — no dead buttons; features that are not configured answer honestly (e.g. crypto checkout returns 503 with an explanation when the processor key is missing)
 - Rate limiting on all auth/public endpoints, CSRF double-submit + origin validation, Zod validation on every input, security headers (CSP, HSTS, …), enumeration-safe password flows
 - **Bots & background workers** (see the dedicated section below): a Telegram admin bot that ingests job postings straight into the database (paste the raw text — it parses everything), a feed-scraper worker, and a premium-alert dispatcher delivering new postings via email (Resend) and Telegram DMs — with an idempotent per-recipient delivery ledger and retries
 
@@ -629,7 +629,7 @@ All endpoints return `{ ok: true, data }` or `{ ok: false, error, issues? }`. Mu
 | Method | Path | Description |
 | --- | --- | --- |
 | GET | `/api/posts` | list with `section,kind,workplace,employment,level,tag,q,page,pageSize,sort`; `authorId=me&status=all` for own posts |
-| POST | `/api/posts` | create (Blog for everyone; editorial sections admin-only until Premium+) |
+| POST | `/api/posts` | create (Blog free for everyone; editorial sections require an active Premium+ plan — 5 published posts/calendar month — or the admin role) |
 | GET/PUT/DELETE | `/api/posts/{slug}` | detail / update (owner or admin) / soft delete |
 | POST | `/api/posts/{slug}/reaction` | set/replace/clear like·dislike (send `none` to clear) |
 | POST | `/api/posts/{slug}/bookmark` | toggle bookmark |
@@ -646,17 +646,20 @@ All endpoints return `{ ok: true, data }` or `{ ok: false, error, issues? }`. Mu
 | POST | `/api/waitlist` | Merklane Ads waitlist (idempotent, Resend confirmation) |
 | GET | `/api/ads/serve?slot=…` | one weighted-random auction pick for a slot (204 when nothing eligible — no empty boxes) |
 | POST | `/api/ads/click` | record a click on a served impression (same-origin enforced, never billed twice) |
-| GET/POST | `/api/ads/campaigns` | advertiser: list own campaigns with view/click stats / create (starts paused) |
-| PATCH | `/api/ads/campaigns/[id]` | advertiser: pause / resume own campaign (resume needs balance ≥ bid) |
-| POST/GET | `/api/ads/topups[/id]` | crypto top-up: create a payment intention (BlockBee hosted address, or the derived mock address in manual/simulate fallback) / poll status |
+| GET/POST | `/api/ads/campaigns` | advertiser: list own campaigns with view/click stats / create funded FROM the ad wallet (starts ACTIVE; wallet must cover the ≥ 50-view minimum flight) |
+| PATCH | `/api/ads/campaigns/[id]` | advertiser: pause / resume (needs balance ≥ bid) / fund from the ad wallet / update content, bid & targeting |
+| GET | `/api/ads/wallet` | the Wallet tab: ad-wallet balance, in-campaign totals, pending deposits, transaction history, deposit config |
+| POST/GET | `/api/ads/topups[/id]` | crypto deposit to the ad WALLET: create a payment intention (BlockBee hosted address, or the derived mock address in manual/simulate fallback) / poll status |
 | POST | `/api/ads/topups/[id]/simulate` | DEMO path — self-confirm a top-up (only when ADS_TOPUP_MODE=simulate) |
-| POST | `/api/admin/ads/topups/[id]/confirm` | admin: mark a deposit received, credit the campaign (optional amount override) |
-| GET/POST | `/api/webhooks/blockbee` | BlockBee IPN + payout webhooks: signature-verified (RSA `x-ca-signature` and/or HMAC `token`), rate-limited, idempotent — credits campaigns, pays referral commissions, settles withdrawals |
+| POST | `/api/admin/ads/topups/[id]/confirm` | admin: mark a deposit received, credit the ad wallet (optional amount override) |
+| GET/POST | `/api/webhooks/blockbee` | BlockBee IPN + payout webhooks: signature-verified (RSA `x-ca-signature` and/or HMAC `token`), rate-limited, idempotent — routes `prem_`/`premplus_` orders to subscription activation and everything else to ad-wallet credits, pays referral commissions, settles withdrawals |
 | GET | `/api/account/referral` | referral cabinet: shareable link/code, balance, lifetime stats, withdrawal history |
 | POST | `/api/account/referral/withdraw` | pay out the referral balance to the user's crypto address via the BlockBee payout chain (balance deducted only after on-chain confirmation) |
 | POST | `/api/contact` | contact form |
 | GET/PUT | `/api/preferences` | interface locale (20 languages, RTL-aware) |
-| POST | `/api/premium/subscribe` | honest 503 — stage-2 billing placeholder |
+| GET | `/api/premium/checkout` | public checkout config: BlockBee availability, offered coins, the exact price catalog |
+| POST | `/api/premium/checkout` | start a Premium / Premium+ subscription payment (server-side pricing, BlockBee hosted address per intention) |
+| GET | `/api/premium/checkout/[id]` | poll one of the caller's own orders (the pricing modal pings this until the IPN confirms on-chain) |
 | POST | `/api/track` | anonymous page-view beacon for the About statistics (silent 204 on every skip path) |
 | GET | `/api/stats/latest` | latest daily statistics snapshot (raw numbers + ISO codes, i18n-neutral) |
 
@@ -696,16 +699,44 @@ Server-to-server webhook endpoints are exempt from browser CSRF (they carry no c
 Three primitives power the ads system (all money is **US cents** in `Int` columns — portable across PostgreSQL and SQLite):
 
 - **Weighted random auction** (`src/lib/ads/auction.ts`): when a slot asks for an ad, every active campaign whose balance covers its bid enters a roulette-wheel draw weighted by `bidPerView` — a 2¢ bid is picked twice as often as a 1¢ bid. Billing is **atomic per impression** (a conditional `updateMany` guards the decrement, so concurrent requests can never overdraw), each serve writes an `AdImpression` (view), and a drained campaign **auto-pauses** until the next top-up.
-- **Crypto top-ups via BlockBee** (`src/lib/ads/blockbee.ts` + `src/lib/ads/topup.ts` + `/api/ads/topups*`): the system no longer generates its own wallets (gas, key-custody and AML exposure) — the external [BlockBee](https://blockbee.io) processor (formerly CryptAPI) hosts the deposit addresses, screens the funds and confirms payments. Creating a top-up calls BlockBee's `/{coin}/create/` endpoint with a callback URL unique per intention (`order_id` + an unguessable `nonce`), gets back a hosted deposit address and shows it with the expected USD amount. The IPN webhook at `/api/webhooks/blockbee` verifies the signature (RSA `x-ca-signature` against the processor's public key and/or HMAC `token` keyed with `BLOCKBEE_IPN_SECRET`), validates `order_id` → pending intention + nonce, and credits the campaign **exactly once** (transaction-guarded status flip) — paying the referrer's 50% commission in the same transaction. Coins: stablecoins + majors on cheap networks (Solana, Polygon, BSC, Arbitrum); **TRON is banned by policy** and cannot be re-enabled via config. Fallback modes for testing/provider outages: `manual` (deterministic mock address, admin confirms via `/api/admin/ads/topups/[id]/confirm`) and `simulate` (advertiser self-confirms; demos only).
-- **Referral system — 50% commissions** (`src/lib/referral.ts` + `/api/account/referral*`): every user gets a shareable code (`/auth?mode=register&ref=CODE`); accounts registered with a code are bound to their inviter (write-once, self-referral impossible). When a referred user's top-up is confirmed — by BlockBee IPN, admin confirm or simulate — half of the credited amount lands in the referrer's `referralBalance` (US cents), exactly once, inside the same transaction. The profile's **Referrals** tab shows the share link, live stats and a withdraw form: payouts run through the BlockBee payout chain (`/payout/request/create/` → `/payout/create/` → `/payout/process/`) to the user's own address, and the balance is **deducted only after the payout webhook confirms on-chain** — failed/expired payouts never take the user's money. When the stage-2 Premium billing lands, the same `creditReferralCommission()` helper hooks into its checkout confirmation.
+- **Crypto top-ups via BlockBee** (`src/lib/ads/blockbee.ts` + `src/lib/ads/topup.ts` + `/api/ads/topups*`): the system no longer generates its own wallets (gas, key-custody and AML exposure) — the external [BlockBee](https://blockbee.io) processor (formerly CryptAPI) hosts the deposit addresses, screens the funds and confirms payments. Creating a top-up calls BlockBee's `/{coin}/create/` endpoint with a callback URL unique per intention (`order_id` + an unguessable `nonce`), gets back a hosted deposit address and shows it with the expected USD amount. The IPN webhook at `/api/webhooks/blockbee` verifies the signature (RSA `x-ca-signature` against the processor's public key and/or HMAC `token` keyed with `BLOCKBEE_IPN_SECRET`), validates `order_id` → pending intention + nonce, and credits the advertiser's **wallet** (`User.adBalance`) **exactly once** (transaction-guarded status flip) — paying the referrer's 50% commission in the same transaction. Campaign budgets are allocated from the wallet afterwards (`POST /api/ads/campaigns` at create, `PATCH … action=fund` later), each allocation a conditional-decrement transaction that can never overdraw. Coins: stablecoins + majors on cheap networks (Solana, Polygon, BSC, Arbitrum); **TRON is banned by policy** and cannot be re-enabled via config. Fallback modes for testing/provider outages: `manual` (deterministic mock address, admin confirms via `/api/admin/ads/topups/[id]/confirm`) and `simulate` (advertiser self-confirms; demos only).
+- **Referral system — 50% commissions** (`src/lib/referral.ts` + `/api/account/referral*`): every user gets a shareable code (`/auth?mode=register&ref=CODE`); accounts registered with a code are bound to their inviter (write-once, self-referral impossible). When a referred user's ad-wallet deposit is confirmed — by BlockBee IPN, admin confirm or simulate — half of the credited amount lands in the referrer's `referralBalance` (US cents), exactly once, inside the same transaction. (Subscription payments do not earn referral commissions — only ad deposits do.) The profile's **Referrals** tab shows the share link, live stats and a withdraw form: payouts run through the BlockBee payout chain (`/payout/request/create/` → `/payout/create/` → `/payout/process/`) to the user's own address, and the balance is **deducted only after the payout webhook confirms on-chain** — failed/expired payouts never take the user's money. When the stage-2 Premium billing landed, subscriptions got their own confirmation path (`confirmPremiumOrder`) — referral commissions remain ad-deposit-only by design.
 - **Payment audit trail** (`PaymentLog` table): every payment event — IPNs (accepted and rejected), payout transitions, admin/simulate confirms, referral commissions, withdrawal requests — is logged with the BlockBee transaction id (`uuid`/payout id/tx hash) for operator reconciliation in one place.
 - **`<AdSlot/>` placements** (`src/components/site/ads/ad-slot.tsx`): home banner below the hero, in-feed cards after the 3rd/6th post on section pages (plus one in the home first rail) and a native card at the bottom of every article. Every placement renders **nothing** on 204 (auction empty / `ADS_ENABLED=false`) — a sold-out auction never leaves empty boxes. Ads are visually distinct by design: a "Sponsored" badge, tinted background and `rel="sponsored"`.
 
-The **`/ads` advertiser dashboard** (auth-gated like the profile cabinet) manages campaigns: create (starts paused — no free impressions), live balance/impressions/clicks/CTR, pause/resume and the crypto top-up modal (coin picker in BlockBee mode) with address polling. e2e: `bash scripts/run-ads-e2e.sh` (42 checks, manual/simulate fallback) + `bash scripts/run-blockbee-e2e.sh` (58 checks — mock processor with real RSA signing: intention → IPN → credit → referral commission → payout chain → webhook settle) + unit: `bun scripts/test-ads-auction.ts` (13 checks).
+The **`/ads` advertiser dashboard** (auth-gated; lives in the profile cabinet at `/profile/ads`, with `/ads` permanently redirecting there) manages campaigns and the wallet: deposit crypto (Wallet tab, coin picker in BlockBee mode), create campaigns funded from the wallet (starts ACTIVE — no free impressions, the wallet gate guarantees the ≥ 50-view minimum flight), live balance/impressions/clicks/CTR, pause/resume, fund/update per campaign, section + locale targeting, and address polling for pending deposits. e2e: `bash scripts/run-ads-e2e.sh` (63 checks — wallet-first flow, targeting, drain) + `bash scripts/run-blockbee-e2e.sh` (69 checks — mock processor with real RSA signing: deposit → IPN → wallet credit → referral commission → campaign funding → payout chain → webhook settle) + unit: `bun scripts/test-ads-auction.ts` (13 checks).
+
+## Merklane Premium — subscriptions, paywall, quotas
+
+Two paid plans on top of the free tier, billed through the same BlockBee processor as the ad wallet (stablecoins + majors on cheap networks, TRON banned, AML-screened):
+
+| Plan | Monthly | Yearly (save 50%) | Unlocks |
+| --- | --- | --- | --- |
+| Free | $0 | $0 | reading, search, bookmarks, comments, Blog publishing |
+| Premium | $5.00 | $30.00 | job alerts — email + personal Telegram bot, digest priority |
+| Premium+ | $15.00 | $90.00 | everything in Premium + editorial publishing (5 posts/calendar month) + post statistics |
+
+**Single source of truth** (`src/lib/premium/plan.ts`): the exact prices (`PLAN_PRICING`), the period table (monthly = 30 days, yearly = 365) and the entitlement helpers (`isPremiumActive` / `isPremiumPlusActive` — plan ∈ {premium, premium_plus} AND premiumUntil in the future or NULL = never-expires operator grant). The pricing UI, the checkout API, the IPN webhook, the dispatch worker and the Telegram bots all import these, so no surface can disagree on who is a subscriber.
+
+**Checkout** (`/api/premium/checkout` + `src/lib/premium/orders.ts`): the client sends only `{plan, period, coin}` — prices always come from the server catalog, never the client. Each intention creates a `PremiumOrder` row whose id IS the BlockBee order_id and carries the routing prefix (`prem_m_<userId>_…`, `prem_y_…`, `premplus_m_…`, `premplus_y_…`), then issues a hosted payment address. The pricing modal polls `GET /api/premium/checkout/[id]` (owner-scoped; the callback nonce is never exposed) until confirmation.
+
+**Confirmation** (`/api/webhooks/blockbee` → `confirmPremiumOrder`): the IPN routes on the order-id prefix — premium orders activate the subscription, everything else credits the ad wallet (referral commissions are ad-deposit-only). A confirmed payment below 90% of the exact price does **not** activate (logged as `underpaid` for the operator; the order stays pending so a follow-up payment to the same address completes it). Activation extends `premiumUntil` from `max(now, current premiumUntil)` — renewals stack — and flips the order atomically (`updateMany` guard), so retried webhooks can never double-grant days.
+
+**The paywall — no paid plan, no alerts (CRITICAL business rule):**
+- `activePremiumUsers()` (the dispatch worker's recipient query) admits only `plan ∈ {premium, premium_plus}` with `premiumUntil` NULL-or-future; free and expired users never receive job alerts by email or Telegram, and the retry pass re-checks the gate (a subscription that lapses between queue and retry is skipped).
+- `/alerts on` in the notifier bot replies **"🔒 Job alerts are a Premium feature. Upgrade at merklane.com/premium"** for free *and expired* users; `/alerts off` stays free (anyone can silence the bot).
+- `/whoami` shows `Plan: Premium+` / `Plan: Premium` / `Plan: Free` (with a clear "expired" hint).
+- The header's Premium link shows "Premium Active ✓" while a subscription runs; the session provider carries `plan` + `premiumUntil` to the client.
+- Editorial publishing (`POST /api/posts` with a non-blog section) requires an **active Premium+** (or admin): standard Premium gets a 403 pointing at `/premium`, and the calendar-month quota (5 published editorial posts, drafts exempt) is enforced server-side.
+
+**Operator tools:** `bun run premium:grant <email> <days>` (or `/grant`, `/revoke` in the admin bot) for comped/manual grants — a NULL `premiumUntil` with a paid plan never expires.
+
+e2e: `bash scripts/run-premium-e2e.sh` (81 checks — pricing catalog, checkout gates, all four order prefixes, pending/confirmed/duplicate/underpaid IPNs, renewal stacking, signature rails, order polling, the Telegram paywall, the dispatch gate and the editorial quotas).
+
 
 ## Site CMS via the admin bot (team & logo)
 
-The Telegram admin bot doubles as a tiny CMS. **👥 Manage team** per member (Vazima / Trinity / Grobofhik): send a text to replace the bio, send a photo to replace the avatar. **🖼 Change logo** uploads the site logo shown on `/about`. Photos are downloaded from Telegram, stored as base64 data-URLs in the `SiteSetting` table (survive container recreation, no Docker image changes) and rendered with a 60 s read cache. The `/about` page merges: bot upload → static placeholder in `about-content.ts` → localized placeholder text.
+The Telegram admin bot doubles as a tiny CMS. **👥 Manage team** per member (Vazima / Trinity / Grobofhik): send a text to replace the bio, send a photo to replace the avatar. **🖼 Change logo** uploads the browser-tab icon (favicon) — the graphical logo is no longer rendered in the visible UI (wordmark-only branding), it lives exclusively in `/api/favicon` (and the social embeds). Photos are downloaded from Telegram, stored as base64 data-URLs in the `SiteSetting` table (survive container recreation, no Docker image changes) and rendered with a 60 s read cache. The `/about` page merges: bot upload → static placeholder in `about-content.ts` → localized placeholder text.
 
 ---
 
@@ -762,7 +793,7 @@ openssl rand -hex 24    # → TELEGRAM_WEBHOOK_SECRET
 bun scripts/set-telegram-webhook.ts
 ```
 
-Other commands: `/jobs [n]`, `/publish <id>`, `/stats`, `/grant <email> <days>`, `/revoke <email>` (premium is granted manually until the stage-2 billing launch), plus subscriber-side `/start <code>`, `/alerts on|off`, `/unlink`, `/whoami`.
+Other commands: `/jobs [n]`, `/publish <id>`, `/stats`, `/grant <email> <days>`, `/revoke <email>` (operator overrides on top of the self-serve BlockBee billing — handy for comped accounts), plus subscriber-side `/start <code>`, `/alerts on|off` (Premium-gated — free users get the 🔒 upgrade reply), `/unlink`, `/whoami` (shows `Plan: Premium+` / `Plan: Premium` / `Plan: Free`).
 
 
 ### 2. Feed-scraper worker (automated API ingestion)

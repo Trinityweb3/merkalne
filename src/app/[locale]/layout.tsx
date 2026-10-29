@@ -28,7 +28,10 @@ export const metadata: Metadata = {
   },
   description:
     'Explore Web3, crypto, blockchain and AI opportunities. Jobs, opportunities and insights — all in one place.',
-  icons: { icon: '/favicon.svg' },
+  // Text-brand strategy: the graphical logo is favicon-only. /api/favicon
+  // serves the Telegram-CMS upload (falls back to the stock /favicon.svg),
+  // so a "Change logo" upload refreshes the browser tab — never the page.
+  icons: { icon: '/api/favicon', apple: '/api/favicon' },
   openGraph: {
     title: 'Merklane | Explore Web3',
     description: 'Jobs, opportunities and insights. All in one place.',

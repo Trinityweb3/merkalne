@@ -9,6 +9,7 @@ import { localizePostList } from '@/lib/localize'
 import { LOCALES } from '@/i18n/routing'
 import { slugify } from '@/lib/utils'
 import { SECTION_META } from '@/lib/constants'
+import { isPremiumPlusActive } from '@/lib/premium/plan'
 
 /**
  * GET /api/posts — public listing with filters + pagination.
@@ -57,11 +58,15 @@ export async function GET(req: Request) {
   }
 }
 
+/** Editorial posts a Premium+ author may publish per calendar month. */
+const EDITORIAL_MONTHLY_QUOTA = 5
+
 /**
  * POST /api/posts — creates a post.
  *  * Authenticated users may publish in the Blog section (free tier).
- *  * Publishing in editorial sections requires the admin role (Premium+
- *    quotas arrive with the stage-2 billing integration — see /api/premium).
+ *  * Publishing in EDITORIAL sections requires an ACTIVE Premium+ plan
+ *    (5 posts / calendar month) or the admin role. Standard Premium is NOT
+ *    enough — the quotas are the Premium+ selling point.
  */
 export async function POST(req: Request) {
   try {
@@ -81,10 +86,36 @@ export async function POST(req: Request) {
     const isAdmin = session.user.role === 'admin'
 
     if (data.section !== 'blog' && !isAdmin) {
-      throw forbidden(
-        `Publishing in ${SECTION_META[data.section].title} requires a Premium+ plan (arriving with stage-2 billing). ` +
-          'The community Blog is free for every registered user.',
-      )
+      // Premium+ gate — enforced server-side from the session's plan state.
+      if (!isPremiumPlusActive(session.user)) {
+        throw forbidden(
+          `Publishing in ${SECTION_META[data.section].title} requires a Premium+ subscription ` +
+            `(merklane.com/premium). Standard Premium unlocks job alerts; the editorial ` +
+            'publishing quotas are Premium+. The community Blog is free for every registered user.',
+        )
+      }
+      // Monthly quota (published editorial posts only — drafts stay free).
+      if (data.status === 'published') {
+        const monthStart = new Date()
+        monthStart.setUTCDate(1)
+        monthStart.setUTCHours(0, 0, 0, 0)
+        const publishedThisMonth = await db.post.count({
+          where: {
+            authorId: session.user.id,
+            section: { not: 'blog' },
+            status: 'published',
+            publishedAt: { gte: monthStart },
+          },
+        })
+        if (publishedThisMonth >= EDITORIAL_MONTHLY_QUOTA) {
+          return jsonError(
+            `Editorial quota reached: ${EDITORIAL_MONTHLY_QUOTA} published posts this calendar month ` +
+              '(Premium+). Additional slots reset on the 1st — or contact us for team arrangements.',
+            403,
+            { code: 'editorial_quota_reached' },
+          )
+        }
+      }
     }
 
     const slug = await uniqueSlug(slugify(data.title))
