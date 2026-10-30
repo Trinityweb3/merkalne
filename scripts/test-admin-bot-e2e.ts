@@ -170,48 +170,108 @@ async function main() {
   await post(msg('/cancel'))
 
   // -------------------------------------------------------------------------
-  console.log('— site CMS: team bios, avatars, logo —')
+  console.log('— site CMS: dynamic team (seed / add / edit / remove) + logo —')
+  // Reset the team table so the lazy seed — including the legacy SiteSetting
+  // merge — is exercised deterministically on every run (fresh dev server,
+  // empty team cache).
+  await db.teamMember.deleteMany({})
+  await db.siteSetting.upsert({
+    where: { key: 'team_vazima_bio' },
+    update: { value: 'Legacy bio from the pre-CMS era.' },
+    create: { key: 'team_vazima_bio', value: 'Legacy bio from the pre-CMS era.' },
+  })
+
   // Menus
   await post(msg('/start'))
   const teamMenu = await post(cbq('team'))
   ok('👥 Manage team opens the team menu', teamMenu.status === 200 && teamMenu.body?.data?.handled === true)
+  const seeded = await db.teamMember.findMany({ orderBy: { order: 'asc' } })
+  ok('lazy seed created the 3 default members', seeded.length === 3, `count=${seeded.length}`)
+  ok('seed order: Vazima, Trinity, Grobofhik', seeded.map((m) => m.name).join(',') === 'Vazima,Trinity,Grobofhik', JSON.stringify(seeded.map((m) => m.name)))
+  const vazima = seeded.find((m) => m.name === 'Vazima')
+  ok('legacy team_vazima_bio merged into the seeded row', vazima?.bio === 'Legacy bio from the pre-CMS era.', JSON.stringify(vazima?.bio))
   ok('team state cleared (menu only)', (await stateOf()) === null)
 
-  const memberMenu = await post(cbq('member:vazima'))
+  const memberMenu = await post(cbq(`member:${vazima!.id}`))
   ok('member submenu opens', memberMenu.body?.data?.handled === true)
+  const unknownMember = await post(cbq('member:doesnotexist000'))
+  ok('unknown member id rejected politely', unknownMember.status === 200 && unknownMember.body?.data?.handled === true)
 
-  // Bio flow: prompt → text → SiteSetting row + state cleared
-  await post(cbq('bio:trinity'))
-  const bioState = await stateOf()
+  // ➕ Add New Member wizard: name → role → social URL
+  await post(cbq('teamadd'))
+  let wiz = await stateOf()
+  ok('wizard step 1 (name) state set', wiz?.step === 'cms' && (wiz?.draft?.cms as any)?.kind === 'add-member' && (wiz?.draft?.cms as any)?.step === 'name', JSON.stringify(wiz?.draft))
+
+  await post(msg('x'.repeat(61)))
+  ok('name over 60 chars rejected (state kept)', ((await stateOf())?.draft?.cms as any)?.step === 'name')
+
+  await post(msg('E2E Wizard'))
+  wiz = await stateOf()
+  ok('wizard step 2 (role) after name', (wiz?.draft?.cms as any)?.step === 'role' && (wiz?.draft?.cms as any)?.name === 'E2E Wizard', JSON.stringify(wiz?.draft?.cms))
+
+  await post(msg('Head of Testing'))
+  wiz = await stateOf()
+  ok('wizard step 3 (social) after role', (wiz?.draft?.cms as any)?.step === 'social' && (wiz?.draft?.cms as any)?.role === 'Head of Testing', JSON.stringify(wiz?.draft?.cms))
+
+  await post(msg('not-a-link'))
+  ok('invalid social URL rejected (state kept)', ((await stateOf())?.draft?.cms as any)?.step === 'social')
+
+  await post(msg('https://t.me/e2e_wizard'))
+  const newMember = await db.teamMember.findFirst({ where: { name: 'E2E Wizard' } })
+  ok('member created with name/role/social', newMember?.role === 'Head of Testing' && newMember?.socialUrl === 'https://t.me/e2e_wizard', JSON.stringify({ role: newMember?.role, socialUrl: newMember?.socialUrl }))
+  ok('member appended after the seeded three (order)', newMember?.order === 3, `order=${newMember?.order}`)
+  ok('state cleared after creation', (await stateOf()) === null)
+
+  // skip variants: role skip + social skip
+  await post(cbq('teamadd'))
+  await post(msg('Skipper Test'))
+  await post(msg('skip'))
+  ok('role skip advances to social step', ((await stateOf())?.draft?.cms as any)?.step === 'social')
+  await post(msg('skip'))
+  const skipper = await db.teamMember.findFirst({ where: { name: 'Skipper Test' } })
+  ok('skip → empty role and no social link', skipper?.role === '' && skipper?.socialUrl === null, JSON.stringify({ role: skipper?.role, socialUrl: skipper?.socialUrl }))
+
+  // Per-field edits on the created member
+  const target = newMember!
+  await post(cbq(`mname:${target.id}`))
+  ok('edit-name state set', ((await stateOf())?.draft?.cms as any)?.kind === 'name')
+  await post(msg('E2E Wizard Renamed'))
+  ok('name edit persisted', (await db.teamMember.findUnique({ where: { id: target.id } }))?.name === 'E2E Wizard Renamed')
+
+  await post(cbq(`mrole:${target.id}`))
+  await post(msg('clear'))
+  ok('role clear → empty role', (await db.teamMember.findUnique({ where: { id: target.id } }))?.role === '')
+
+  await post(cbq(`mbio:${target.id}`))
+  await post(msg('x'.repeat(401)))
+  ok('bio over 400 chars rejected (state kept)', (await stateOf())?.step === 'cms')
+  await post(msg('E2E bio: verifying the dynamic team CMS end to end.'))
   ok(
-    'bio prompt sets cms state (kind bio, member trinity)',
-    bioState?.step === 'cms' && (bioState?.draft?.cms as any)?.kind === 'bio' && (bioState?.draft?.cms as any)?.member === 'trinity',
-    JSON.stringify(bioState?.draft),
+    'bio edit persisted to TeamMember.bio (not a SiteSetting row)',
+    (await db.teamMember.findUnique({ where: { id: target.id } }))?.bio === 'E2E bio: verifying the dynamic team CMS end to end.',
   )
 
-  const tooLong = await post(msg('x'.repeat(401)))
-  ok('bio over 400 chars rejected (state kept)', (await stateOf())?.step === 'cms')
-
-  const bio = await post(msg('Trinity writes the Merklane front-end and dreams in TypeScript.'))
-  ok('bio accepted', bio.body?.data?.handled === true)
-  const savedBio = await db.siteSetting.findUnique({ where: { key: 'team_trinity_bio' } })
-  ok('team_trinity_bio persisted in SiteSetting', savedBio?.value === 'Trinity writes the Merklane front-end and dreams in TypeScript.', JSON.stringify(savedBio?.value?.slice(0, 40)))
-  ok('bio state cleared after save', (await stateOf()) === null)
-
-  // Bio text while in cms mode must NOT be treated as a job paste
-  await db.post.deleteMany({ where: { title: 'Company: this is not a job' } })
-  await post(cbq('bio:vazima'))
+  // Bio text in cms mode must NOT be treated as a job paste
+  await db.post.deleteMany({ where: { title: { contains: 'not a job' } } })
+  await post(cbq(`mbio:${target.id}`))
   await post(msg('Company: this is not a job'))
   const notAJob = await db.post.findFirst({ where: { title: { contains: 'not a job' } } })
   ok('bio capture does not create a post', notAJob === null)
 
-  // Avatar / logo photo flows: without a bot token the Telegram download
-  // fails gracefully — state preserved, admin can retry.
-  await post(cbq('avatar:grobofhik'))
+  // Social edit: non-http scheme rejected, good URL persisted
+  await post(cbq(`msocial:${target.id}`))
+  await post(msg('javascript:alert(1)'))
+  ok('non-http(s) social rejected (state kept)', ((await stateOf())?.draft?.cms as any)?.kind === 'social')
+  await post(msg('https://github.com/e2e-wizard'))
+  ok('social edit persisted', (await db.teamMember.findUnique({ where: { id: target.id } }))?.socialUrl === 'https://github.com/e2e-wizard')
+
+  // Avatar photo flow: without a bot token the Telegram download fails
+  // gracefully — state preserved, admin can retry.
+  await post(cbq(`mavatar:${target.id}`))
   const avatarState = await stateOf()
   ok(
-    'avatar prompt sets cms state (kind avatar, member grobofhik)',
-    avatarState?.step === 'cms' && (avatarState?.draft?.cms as any)?.kind === 'avatar',
+    'avatar prompt sets cms state (kind avatar, memberId)',
+    avatarState?.step === 'cms' && (avatarState?.draft?.cms as any)?.kind === 'avatar' && (avatarState?.draft?.cms as any)?.memberId === target.id,
     JSON.stringify(avatarState?.draft),
   )
 
@@ -232,8 +292,15 @@ async function main() {
   await post(msg('/cancel'))
   ok('cancel exits the cms flow', (await stateOf()) === null)
 
+  // 🗑 Remove: two-tap confirmation
+  await post(cbq(`mremove:${target.id}`))
+  ok('remove confirm shown, state cleared', (await stateOf()) === null)
+  ok('member NOT removed before confirmation', (await db.teamMember.findUnique({ where: { id: target.id } })) !== null)
+  await post(cbq(`mremove2:${target.id}`))
+  ok('member removed after confirmation', (await db.teamMember.findUnique({ where: { id: target.id } })) === null)
+
   const logoState = await post(cbq('logo'))
-  ok('logo prompt sets cms state (kind logo)', (await stateOf())?.draft != null && ((await stateOf())?.draft?.cms as any)?.kind === 'logo')
+  ok('logo prompt sets cms state (kind logo)', ((await stateOf())?.draft?.cms as any)?.kind === 'logo')
 
   // Photo outside a cms flow → polite hint, not an error
   await post(msg('/cancel'))
@@ -246,6 +313,7 @@ async function main() {
   // cleanup
   await db.post.deleteMany({ where: { title: { in: ['Senior Wizard Test Engineer', 'Power Command Post'] } } })
   await db.siteSetting.deleteMany({ where: { key: { in: ['team_trinity_bio', 'team_vazima_bio', 'team_grobofhik_avatar', 'current_logo_url'] } } })
+  await db.teamMember.deleteMany({ where: { name: { in: ['E2E Wizard', 'E2E Wizard Renamed', 'Skipper Test'] } } })
   await db.user.deleteMany({ where: { email: 'admin-bot-e2e@test.local' } })
   await db.telegramAdminState.deleteMany({})
   await db.$disconnect()

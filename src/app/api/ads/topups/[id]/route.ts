@@ -30,7 +30,6 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
       walletAddress: topUp.walletAddress,
       amountExpectedCents: topUp.amountExpected,
       amountReceivedCents: topUp.amountReceived,
-      campaignId: topUp.campaignId,
       mode: topUpMode(),
       provider: topUp.provider,
       coin: topUp.coin,

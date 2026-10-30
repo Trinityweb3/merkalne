@@ -11,13 +11,18 @@ import { POST_SECTIONS } from '../constants'
 /** Obvious crawler/spider/lighthouse user agents — never counted as visitors. */
 const BOT_UA_RE = /\b(bot|crawler|spider|crawling|headless|lighthouse|pagespeed|curl|wget|python-requests|facebookexternalhit|preview)\b/i
 
-/** Proxy headers that carry a 2-letter country code, in priority order. */
+/**
+ * Proxy headers that carry a 2-letter country code, in priority order.
+ * cf-ipcountry comes FIRST: Cloudflare sets it on EVERY proxied request
+ * (based on the connection's geo data at the edge) and it survives local
+ * reverse proxies like Caddy, which only rewrite X-Forwarded-For.
+ */
 const COUNTRY_HEADERS = [
   'cf-ipcountry', // Cloudflare (works out of the box when fronted by CF)
   'x-vercel-ip-country',
   'x-geo-country',
   'x-country-code',
-]
+] as const
 
 export const UNKNOWN_COUNTRY = 'XX'
 
@@ -28,13 +33,26 @@ export function isBotUserAgent(ua: string): boolean {
 
 /**
  * Country from standard proxy geo headers (upper-cased 2-letter ISO code).
- * "XX" (unknown) when no proxy provides geo information — self-hosted setups
- * without a geo-aware proxy honestly report unknown instead of guessing.
+ *
+ * Cloudflare special values in cf-ipcountry are handled explicitly:
+ *   "XX" — CF could not determine the visitor's country
+ *   "T1" — Tor exit node (not a country; Intl.DisplayNames can't label it)
+ * Both fall through to the remaining headers instead of masking a real
+ * country a later proxy might still provide, and degrade to XX (unknown)
+ * only when nothing usable is present. Self-hosted setups without a
+ * geo-aware proxy honestly report unknown instead of guessing.
+ *
+ * VPN users are counted at the VPN exit node's country on purpose — this is
+ * statistics, not access control.
  */
 export function countryFromHeaders(headers: Headers): string {
   for (const name of COUNTRY_HEADERS) {
     const raw = headers.get(name)
-    if (raw && /^[A-Za-z]{2}$/.test(raw)) return raw.toUpperCase()
+    if (!raw) continue
+    const code = raw.trim().toUpperCase()
+    if (!/^[A-Z]{2}$/.test(code)) continue // T1, garbage, multi-token — skip
+    if (code === UNKNOWN_COUNTRY) continue // CF "unknown" — try other sources
+    return code
   }
   return UNKNOWN_COUNTRY
 }

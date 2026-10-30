@@ -3,11 +3,11 @@ import { getTranslations } from 'next-intl/server'
 import { Link } from '@/i18n/navigation'
 import { Compass, FileText, Globe, ShieldCheck, Sparkles, Users, Video } from 'lucide-react'
 import { getLatestDailyStats } from '@/lib/stats/aggregate'
-import { getSiteOverrides, type TeamMemberOverride } from '@/lib/site-settings'
+import { getTeamMembers, type TeamMemberRow } from '@/lib/team'
 import { AboutStats } from '@/components/site/about-stats'
 import { YoutubeEmbed } from '@/components/site/youtube-embed'
 import { Button } from '@/components/ui/button'
-import { MONTHLY_RECAPS, PITCH_DECK, TEAM_MEMBERS, type TeamMember } from '@/lib/about-content'
+import { MONTHLY_RECAPS, PITCH_DECK } from '@/lib/about-content'
 
 export const dynamic = 'force-dynamic'
 
@@ -65,33 +65,29 @@ function TeamAvatar({ name, imageUrl }: { name: string; imageUrl?: string }) {
 }
 
 /**
- * One team card. The avatar/bio shown are the RUNTIME values: the Telegram
- * admin bot's upload (SiteSetting override) wins over the static placeholder
- * in about-content.ts, which wins over the localized placeholder text. When
- * the member has a social link the WHOLE card becomes the link (opens in a
- * new tab; the aria-label announces it); without a link it renders as a
- * plain, non-clickable card.
+ * One team card. Data comes from the TeamMember table (Telegram-admin-bot
+ * managed, src/lib/team.ts): name/role/bio are plain operator text, the
+ * avatar is an uploaded photo (data URL) or null → generated initials, and
+ * when a social link is set the WHOLE card becomes the link (opens in a new
+ * tab; the aria-label announces it); without a link it renders as a plain,
+ * non-clickable card.
  */
 function TeamCard({
   member,
-  role,
   bio,
-  imageUrl,
   openLabel,
 }: {
-  member: TeamMember
-  role: string
+  member: TeamMemberRow
   bio: string
-  imageUrl?: string
   openLabel: string
 }) {
   const body = (
     <>
       <div className="row" style={{ gap: 14, alignItems: 'center' }}>
-        <TeamAvatar name={member.name} imageUrl={imageUrl} />
+        <TeamAvatar name={member.name} imageUrl={member.avatarUrl ?? undefined} />
         <div style={{ minWidth: 0 }}>
           <h3>{member.name}</h3>
-          <p className="team-role">{role}</p>
+          {member.role ? <p className="team-role">{member.role}</p> : null}
         </div>
       </div>
       <p className="muted small" style={{ marginTop: 14, lineHeight: 1.7 }}>
@@ -120,12 +116,10 @@ export default async function AboutPage({ params }: PageProps) {
   const { locale } = await params
   const t = await getTranslations({ locale, namespace: 'about' })
   const latest = await getLatestDailyStats()
-  // Operator-managed content (Telegram admin bot uploads): team avatar/bio
-  // overrides. 60 s cache — safe to read on every request. (The site logo is
-  // no longer rendered here — it lives only in the favicon, /api/favicon.)
-  const overrides = await getSiteOverrides()
-  const teamOverride = (key: TeamMember['settingKey']): TeamMemberOverride =>
-    overrides.team[key] ?? {}
+  // Fully dynamic team (TeamMember table, managed via the Telegram admin
+  // bot — src/lib/team.ts). 60 s cache; an empty table self-seeds the three
+  // defaults on first read, merging any legacy operator overrides.
+  const team = await getTeamMembers()
 
   return (
     // Inline fallback mirrors .container (globals.css): even if the stylesheet
@@ -172,19 +166,18 @@ export default async function AboutPage({ params }: PageProps) {
           </div>
         </div>
         <div className="grid-3" style={{ marginTop: 8 }}>
-          {TEAM_MEMBERS.map((member) => {
-            const o = teamOverride(member.settingKey)
-            return (
+          {team.length === 0 ? (
+            <p className="muted small">{t('bioPlaceholder')}</p>
+          ) : (
+            team.map((member) => (
               <TeamCard
-                key={member.name}
+                key={member.id}
                 member={member}
-                role={t(member.roleKey)}
-                imageUrl={o.avatar ?? member.imageUrl}
-                bio={o.bio?.trim() ? o.bio : member.bio?.trim() ? member.bio : t('bioPlaceholder')}
+                bio={member.bio.trim() ? member.bio : t('bioPlaceholder')}
                 openLabel={t('openProfile', { name: member.name })}
               />
-            )
-          })}
+            ))
+          )}
         </div>
       </section>
 

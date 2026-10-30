@@ -26,6 +26,8 @@ prisma/migrations/0006_site_cms_ads/migration.sql
 prisma/migrations/0007_blockbee_referrals/migration.sql
 prisma/migrations/0008_ads_targeting_wallet/migration.sql
 prisma/migrations/0009_premium_orders/migration.sql
+prisma/migrations/0010_team_members/migration.sql
+prisma/migrations/0011_ads_phase1_double_entry/migration.sql
 prisma/migrations/migration_lock.toml
 prisma/schema.prisma
 prisma/schema.sqlite.prisma
@@ -34,6 +36,7 @@ public/favicon.svg
 public/logo.svg
 scripts/add-ads-i18n-keys.mjs
 scripts/add-premium-i18n-keys.mjs
+scripts/apply-migration-sql.ts
 scripts/build-export.sh
 scripts/check-db-0004.ts
 scripts/demo-stats.ts
@@ -59,10 +62,14 @@ scripts/test-blockbee-e2e.ts
 scripts/test-llm-translation.ts
 scripts/test-post-split-regression.ts
 scripts/test-premium-e2e.ts
+scripts/test-stats-geo.ts
 scripts/test-translation-e2e.ts
 scripts/ui18n-codegen/ads-payloads-a.ts
 scripts/ui18n-codegen/ads-payloads-b.ts
 scripts/ui18n-codegen/ads-payloads.ts
+scripts/ui18n-codegen/ads-phase1-payloads-a.ts
+scripts/ui18n-codegen/ads-phase1-payloads-b.ts
+scripts/ui18n-codegen/ads-phase1-payloads.ts
 scripts/ui18n-codegen/ar.ts
 scripts/ui18n-codegen/blockbee-payloads.ts
 scripts/ui18n-codegen/bn.ts
@@ -74,6 +81,7 @@ scripts/ui18n-codegen/fil.ts
 scripts/ui18n-codegen/fr-de.ts
 scripts/ui18n-codegen/hi.ts
 scripts/ui18n-codegen/id.ts
+scripts/ui18n-codegen/inject-ads-phase1.ts
 scripts/ui18n-codegen/inject-ads.ts
 scripts/ui18n-codegen/inject-blockbee.ts
 scripts/ui18n-codegen/inject.ts
@@ -278,6 +286,7 @@ src/i18n/routing.ts
 src/lib/about-content.ts
 src/lib/ads/auction.ts
 src/lib/ads/blockbee.ts
+src/lib/ads/money.ts
 src/lib/ads/targeting.ts
 src/lib/ads/topup.ts
 src/lib/ads/wallet.ts
@@ -312,6 +321,7 @@ src/lib/stats/aggregate.ts
 src/lib/stats/config.ts
 src/lib/stats/track.ts
 src/lib/stats/types.ts
+src/lib/team.ts
 src/lib/translate.ts
 src/lib/translation-glossary.ts
 src/lib/utils.ts

@@ -164,6 +164,16 @@ cp .env.example .env               # set DATABASE_URL (+ AUTH_SECRET for webhook
 
 bunx prisma generate               # Prisma client
 bunx prisma migrate deploy         # apply committed migrations (PostgreSQL)
+# NOTE (ads Phase 1): migration 0011_ads_phase1_double_entry REPLACES the
+# pre-phase ads models. It is data-preserving: existing User.adBalance cents
+# become Wallet.availableMicroUsd (1¢ = 10,000 µUSD) + a CREDIT ledger row,
+# and every existing AdCampaign becomes a CPM campaign (old per-view billing
+# → bid × 1000) keeping its id, with its balance committed via a RESERVE
+# ledger row and a v1 creative. 'ended' campaigns keep their budget reserved
+# — delete them in the dashboard to refund the wallet. AdImpression history
+# is NOT migrated (stats restart at the migration; all rows are QA-era).
+# The local SQLite preview applies the same file via
+#   bun scripts/apply-migration-sql.ts prisma/migrations/0011_ads_phase1_double_entry/migration.sql
 bun prisma/seed.ts                 # optional: reference dataset + demo accounts
 
 bun run dev                        # http://localhost:3000

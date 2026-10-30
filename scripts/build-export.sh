@@ -232,13 +232,15 @@ assert_file_contains "${ROOT}/src/components/site/article-body.tsx" 'splitMetada
   "article-body: pipe-separated metadata split at render time"
 assert_file_contains "${ROOT}/src/components/site/article-body.tsx" 'METADATA_EMOJI_RE' \
   "article-body: split gated on metadata emojis (📍🕐💰 — markdown tables safe)"
-# --- Team data + social links (Vazima / Trinity / Grobofhik) ------------------
-assert_file_contains "${ROOT}/src/lib/about-content.ts" 'SOCIAL_VAZIMA_URL' \
-  "about-content: Vazima social link read from env"
-assert_file_contains "${ROOT}/src/lib/about-content.ts" 'SOCIAL_TRINITY_URL' \
-  "about-content: Trinity social link read from env"
-assert_file_contains "${ROOT}/src/lib/about-content.ts" 'SOCIAL_GROBOFHIK_URL' \
-  "about-content: Grobofhik social link read from env"
+# --- Team data + social links (dynamic TeamMember CMS) ------------------------
+assert_file_contains "${ROOT}/src/lib/team.ts" 'SOCIAL_VAZIMA_URL' \
+  "team seed: Vazima social link read from env"
+assert_file_contains "${ROOT}/src/lib/team.ts" 'SOCIAL_TRINITY_URL' \
+  "team seed: Trinity social link read from env"
+assert_file_contains "${ROOT}/src/lib/team.ts" 'SOCIAL_GROBOFHIK_URL' \
+  "team seed: Grobofhik social link read from env"
+assert_file_contains "${ROOT}/src/lib/team.ts" 'team_vazima_bio' \
+  "team seed: legacy SiteSetting overrides merged on first read"
 assert_file_contains "${ROOT}/.env.example" 'SOCIAL_VAZIMA_URL=""' \
   ".env.example: team social link variables documented"
 assert_file_contains "${ROOT}/.env.example" 'SOCIAL_TRINITY_URL=""' \
@@ -262,26 +264,120 @@ fi
 # --- Ads system + site CMS + legacy design (2026 build) -----------------------
 assert_file_contains "${ROOT}/prisma/schema.prisma" 'model SiteSetting' \
   "schema: SiteSetting (Telegram CMS key-value store)"
-assert_file_contains "${ROOT}/prisma/schema.prisma" 'model AdCampaign' \
-  "schema: AdCampaign model"
-assert_file_contains "${ROOT}/prisma/schema.prisma" 'model AdImpression' \
-  "schema: AdImpression ledger"
 assert_file_contains "${ROOT}/prisma/schema.prisma" 'model CryptoTopUp' \
   "schema: CryptoTopUp model"
 [ -f "${ROOT}/prisma/migrations/0006_site_cms_ads/migration.sql" ] && echo "  [ok]   migration 0006_site_cms_ads present" \
   || { echo "  [FAIL] prisma/migrations/0006_site_cms_ads missing"; fail=1; }
-assert_file_contains "${ROOT}/src/lib/ads/auction.ts" 'pickWeightedRandom' \
-  "auction.ts: weighted-random (roulette wheel) selection"
-assert_file_contains "${ROOT}/src/lib/ads/auction.ts" 'balance: { gte: drawn.bidPerView }' \
-  "auction.ts: atomic conditional bill (no overdraft)"
-assert_file_contains "${ROOT}/src/lib/ads/auction.ts" "status: 'paused'" \
-  "auction.ts: drained campaigns auto-pause"
 assert_file_contains "${ROOT}/src/lib/ads/topup.ts" 'deriveDepositAddress' \
   "topup.ts: deterministic deposit-address derivation (manual fallback)"
 assert_file_contains "${ROOT}/src/lib/ads/topup.ts" 'confirmTopUp' \
   "topup.ts: idempotent confirmation + crediting"
 assert_file_contains "${ROOT}/src/lib/ads/topup.ts" "blockbeeConfigured() ? 'blockbee' : 'manual'" \
   "topup.ts: AUTO mode resolution (blockbee when key set, else manual)"
+# --- Ads Phase 1: double-entry wallet, campaign structure, budget reservations --
+for PHASE1_MODEL in Wallet LedgerEntry Campaign Creative BudgetReservation; do
+  assert_file_contains "${ROOT}/prisma/schema.prisma" "model ${PHASE1_MODEL} " \
+    "schema: ${PHASE1_MODEL} model (PostgreSQL dialect)"
+  assert_file_contains "${ROOT}/prisma/schema.sqlite.prisma" "model ${PHASE1_MODEL} " \
+    "schema: ${PHASE1_MODEL} model (SQLite preview dialect)"
+done
+[ -f "${ROOT}/prisma/migrations/0011_ads_phase1_double_entry/migration.sql" ] && echo "  [ok]   migration 0011_ads_phase1_double_entry present" \
+  || { echo "  [FAIL] prisma/migrations/0011_ads_phase1_double_entry missing"; fail=1; }
+assert_file_contains "${ROOT}/prisma/migrations/0011_ads_phase1_double_entry/migration.sql" "migrate:campaign:" \
+  "migration 0011: deterministic legacy-data transform ids"
+assert_file_contains "${ROOT}/prisma/migrations/0011_ads_phase1_double_entry/migration.sql" 'DROP TABLE IF EXISTS "AdCampaign"' \
+  "migration 0011: legacy AdCampaign teardown"
+assert_file_contains "${ROOT}/src/lib/ads/money.ts" 'MICRO_PER_USD = 1_000_000' \
+  'money.ts: micro-USD integer unit ($1.00 = 1,000,000)'
+assert_file_contains "${ROOT}/src/lib/ads/money.ts" 'cpmPerViewMicro' \
+  "money.ts: CPM per-view division (bid/1000)"
+assert_file_contains "${ROOT}/src/lib/ads/money.ts" 'MIN_BUDGET_EVENTS = 20' \
+  "money.ts: minimum flight rule (20 billable events)"
+assert_file_contains "${ROOT}/src/lib/ads/wallet.ts" 'creditWalletTopUp' \
+  "wallet.ts: top-up credit movement (CREDIT ledger row)"
+assert_file_contains "${ROOT}/src/lib/ads/wallet.ts" 'reserveCampaignBudget' \
+  "wallet.ts: campaign budget reservation (RESERVE ledger row)"
+assert_file_contains "${ROOT}/src/lib/ads/wallet.ts" 'chargeReservation' \
+  "wallet.ts: charge movement (CHARGE ledger row, unique eventId)"
+assert_file_contains "${ROOT}/src/lib/ads/wallet.ts" 'refundCampaignBudget' \
+  "wallet.ts: delete-refund movement (REFUND ledger row)"
+assert_file_contains "${ROOT}/src/lib/ads/auction.ts" 'pickWeightedRandom' \
+  "auction.ts: weighted-random (roulette wheel) selection"
+assert_file_contains "${ROOT}/src/lib/ads/auction.ts" 'pickPoolAndDraw' \
+  "auction.ts: 50/50 CPC/CPM pool split + in-pool weighted draw"
+assert_file_contains "${ROOT}/src/lib/ads/auction.ts" 'RESERVATION_TTL_MS = 30 * 60 * 1000' \
+  "auction.ts: 30-minute CPC hold TTL (spec)"
+assert_file_contains "${ROOT}/src/lib/ads/auction.ts" 'expireStaleReservations' \
+  "auction.ts: sweeper flips overdue HELD rows to EXPIRED"
+assert_file_contains "${ROOT}/src/lib/ads/auction.ts" 'finalizeClick' \
+  "auction.ts: valid-click finalisation (conditional status flip + charge)"
+assert_file_contains "${ROOT}/src/lib/ads/auction.ts" 'campaignBudgetStates' \
+  "auction.ts: ledger-derived budget state (no mutable balance column)"
+assert_file_contains "${ROOT}/src/lib/ads/topup.ts" 'creditWalletTopUp' \
+  "topup.ts: confirmTopUp credits the unified wallet"
+assert_file_contains "${ROOT}/src/lib/ads/topup.ts" 'eventId: `topup:${topUp.id}`' \
+  "topup.ts: credit eventId idempotent against IPN retries"
+assert_file_contains "${ROOT}/src/app/api/ads/campaigns/route.ts" "format: z.enum(['text', 'banner'])" \
+  "campaigns POST: format selectable independently of billing"
+assert_file_contains "${ROOT}/src/app/api/ads/campaigns/route.ts" "billingModel: z.enum(['cpc', 'cpm'])" \
+  "campaigns POST: exactly one billing model per campaign"
+assert_file_contains "${ROOT}/src/app/api/ads/campaigns/[id]/route.ts" "action: z.enum(['pause', 'resume', 'fund', 'update', 'delete'])" \
+  "campaigns PATCH: five actions incl. soft delete"
+assert_file_contains "${ROOT}/src/app/api/ads/campaigns/[id]/route.ts" 'refundCampaignBudget' \
+  "campaigns PATCH delete: unspent budget refunded to the wallet"
+assert_file_contains "${ROOT}/src/app/api/ads/wallet/route.ts" 'ledger:' \
+  "wallet GET: exposes the immutable ledger (double-entry trail)"
+assert_file_contains "${ROOT}/src/app/api/ads/click/route.ts" 'reservationId: z.string' \
+  "click POST: keyed by the BudgetReservation id"
+assert_file_contains "${ROOT}/src/components/site/ads/ad-slot.tsx" "ad.format === 'banner'" \
+  "AdSlot: banner format renders the image creative"
+assert_file_contains "${ROOT}/src/components/site/ads/ad-slot.tsx" 'reservationId' \
+  "AdSlot: click beacon echoes the reservation id"
+assert_file_contains "${ROOT}/src/components/site/ads/ads-dashboard.tsx" 'billingCpc' \
+  "dashboard: billing model chips (CPC — pay per click)"
+assert_file_contains "${ROOT}/src/components/site/ads/ads-dashboard.tsx" 'formatBanner' \
+  "dashboard: format chips (Text / Banner)"
+assert_file_contains "${ROOT}/src/components/site/ads/ads-dashboard.tsx" 'bidSuffixCpc' \
+  "dashboard: bid shown in the model's unit ($/click, $/1000 views)"
+assert_file_contains "${ROOT}/src/components/site/ads/ads-dashboard.tsx" 'dailyBudgetLabel' \
+  "dashboard: daily budget field"
+assert_file_contains "${ROOT}/src/components/site/ads/ads-dashboard.tsx" 'ledgerTitle' \
+  "dashboard: wallet ledger table"
+assert_file_contains "${ROOT}/src/components/site/ads/ads-dashboard.tsx" 'deleteBtn' \
+  "dashboard: delete action (refund on delete)"
+# every dictionary carries the Phase-1 ads keys (grep loop, all 20 locales)
+PHASE1_COUNT="$(ls -1 "${ROOT}/src/i18n/messages" | grep -c '\.ts$')"
+PHASE1_OK=0
+for PHASE1_FILE in "${ROOT}"/src/i18n/messages/*.ts; do
+  if grep -q "bidSuffixCpc:" "${PHASE1_FILE}" && grep -q "ledgerTitle:" "${PHASE1_FILE}" && grep -q "statusCompleted:" "${PHASE1_FILE}" && grep -q "estClicks:" "${PHASE1_FILE}"; then
+    PHASE1_OK=$((PHASE1_OK + 1))
+  else
+    echo "  [FAIL] ${PHASE1_FILE##*/}: missing Phase-1 ads keys (bidSuffixCpc/ledgerTitle/statusCompleted/estClicks)"
+    fail=1
+  fi
+done
+[ "${PHASE1_OK}" -eq "${PHASE1_COUNT}" ] && echo "  [ok]   Phase-1 ads keys present in ${PHASE1_OK}/${PHASE1_COUNT} dictionaries" \
+  || { echo "  [FAIL] Phase-1 ads keys: only ${PHASE1_OK}/${PHASE1_COUNT} dictionaries covered"; fail=1; }
+# legacy models fully swept from the application source (they live on ONLY in
+# the migration SQL, which legitimately references the tables it transforms)
+if grep -rEq 'adBalance|AdImpression|bidPerView|AdCampaign' "${ROOT}/src"; then
+  echo "  [FAIL] pre-phase ads model still referenced in src/ (stale code)"
+  grep -rEn 'adBalance|AdImpression|bidPerView|AdCampaign' "${ROOT}/src" | head -5
+  fail=1
+else
+  echo "  [ok]   no pre-phase ads model references left in src/"
+fi
+# e2e suites updated to the Phase-1 contract
+[ -f "${ROOT}/scripts/test-ads-e2e.ts" ] && echo "  [ok]   ads e2e suite present" \
+  || { echo "  [FAIL] scripts/test-ads-e2e.ts missing"; fail=1; }
+assert_file_contains "${ROOT}/scripts/test-ads-e2e.ts" 'ledgerInvariant' \
+  "ads e2e: wallet invariant (available+reserved == Σcredit−Σcharge)"
+assert_file_contains "${ROOT}/scripts/test-ads-e2e.ts" 'out_of_budget' \
+  "ads e2e: resume out-of-budget rejection covered"
+assert_file_contains "${ROOT}/scripts/test-ads-auction.ts" 'pickPoolAndDraw' \
+  "auction unit tests: pool split covered"
+[ -f "${ROOT}/scripts/apply-migration-sql.ts" ] && echo "  [ok]   local migration applier present" \
+  || { echo "  [FAIL] scripts/apply-migration-sql.ts missing"; fail=1; }
 # --- BlockBee processor + referral system (2026 payments build) ----------------
 assert_file_contains "${ROOT}/prisma/schema.prisma" 'model PaymentLog' \
   "schema: PaymentLog audit trail"
@@ -390,8 +486,8 @@ assert_file_contains "${ROOT}/src/app/api/webhooks/telegram-admin/route.ts" 'han
   "admin bot: photo upload handler wired"
 assert_file_contains "${ROOT}/src/lib/bots/telegram.ts" 'telegramDownloadAsDataUrl' \
   "telegram lib: file download → data URL (CMS uploads)"
-assert_file_contains "${ROOT}/src/app/[locale]/about/page.tsx" 'getSiteOverrides' \
-  "about page: dynamic team from SiteSettings"
+assert_file_contains "${ROOT}/src/app/[locale]/about/page.tsx" 'getTeamMembers' \
+  "about page: dynamic team from the TeamMember table"
 if grep -qF 'object-contain' "${ROOT}/src/app/[locale]/about/page.tsx"; then
   echo "  [FAIL] about page: logo <img> is back in the visible UI (favicon-only branding)"
   fail=1
@@ -688,7 +784,7 @@ assert_file_contains "${VERIFY_DIR}/merklane/src/components/site/article-body.ts
   "archive: job-post metadata split ships"
 assert_file_contains "${VERIFY_DIR}/merklane/src/components/site/article-body.tsx" 'METADATA_EMOJI_RE' \
   "archive: metadata split emoji gate ships"
-assert_file_contains "${VERIFY_DIR}/merklane/src/lib/about-content.ts" 'SOCIAL_VAZIMA_URL' \
+assert_file_contains "${VERIFY_DIR}/merklane/src/lib/team.ts" 'SOCIAL_VAZIMA_URL' \
   "archive: team social env wiring ships"
 assert_file_contains "${VERIFY_DIR}/merklane/.env.example" 'SOCIAL_VAZIMA_URL=""' \
   "archive: .env.example documents team social links"
@@ -790,6 +886,84 @@ for dict in "${VERIFY_DIR}"/merklane/src/i18n/messages/*.ts; do
 done
 [ "${archive_prem_i18n_ok}" -eq 20 ] && echo "  [ok]   archive: premium namespace in all 20 dictionaries" \
   || { echo "  [FAIL] archive: premium namespace in only ${archive_prem_i18n_ok}/20 dictionaries"; archive_fail=1; }
+
+# --- Dynamic team CMS + visitor-stats geolocation (stage: team-cms + geo) ---
+[ -f "${VERIFY_DIR}/merklane/prisma/migrations/0010_team_members/migration.sql" ] && echo "  [ok]   archive: migration 0010 (TeamMember) ships" \
+  || { echo "  [FAIL] archive: prisma/migrations/0010_team_members MISSING"; archive_fail=1; }
+assert_file_contains "${VERIFY_DIR}/merklane/prisma/schema.prisma" 'model TeamMember' \
+  "archive: TeamMember model ships"
+assert_file_contains "${VERIFY_DIR}/merklane/src/lib/team.ts" 'getTeamMembers' \
+  "archive: team CMS data layer ships"
+assert_file_contains "${VERIFY_DIR}/merklane/src/app/api/webhooks/telegram-admin/route.ts" 'teamadd' \
+  "archive: bot add-member wizard ships"
+assert_file_contains "${VERIFY_DIR}/merklane/src/app/api/webhooks/telegram-admin/route.ts" 'mremove2' \
+  "archive: bot member removal (two-tap confirm) ships"
+assert_file_contains "${VERIFY_DIR}/merklane/src/app/[locale]/about/page.tsx" 'getTeamMembers' \
+  "archive: /about renders the team from the DB"
+assert_file_contains "${VERIFY_DIR}/merklane/src/lib/rate-limit.ts" 'cf-connecting-ip' \
+  "archive: clientIp prefers CF-Connecting-IP (true visitor IP)"
+assert_file_contains "${VERIFY_DIR}/merklane/src/lib/stats/track.ts" 'cf-ipcountry' \
+  "archive: stats country prefers cf-ipcountry (Cloudflare geo)"
+[ -f "${VERIFY_DIR}/merklane/scripts/test-stats-geo.ts" ] && echo "  [ok]   archive: geolocation unit suite ships" \
+  || { echo "  [FAIL] archive: scripts/test-stats-geo.ts MISSING"; archive_fail=1; }
+assert_file_contains "${VERIFY_DIR}/merklane/scripts/test-admin-bot-e2e.ts" 'teamadd' \
+  "archive: admin-bot e2e covers the team CMS"
+# --- Ads Phase 1 (in-archive mirror) -------------------------------------------
+for PHASE1_MODEL in Wallet LedgerEntry Campaign Creative BudgetReservation; do
+  assert_file_contains "${VERIFY_DIR}/merklane/prisma/schema.prisma" "model ${PHASE1_MODEL} " \
+    "archive: schema ${PHASE1_MODEL} model (PostgreSQL dialect)"
+  assert_file_contains "${VERIFY_DIR}/merklane/prisma/schema.sqlite.prisma" "model ${PHASE1_MODEL} " \
+    "archive: schema ${PHASE1_MODEL} model (SQLite preview dialect)"
+done
+[ -f "${VERIFY_DIR}/merklane/prisma/migrations/0011_ads_phase1_double_entry/migration.sql" ] && echo "  [ok]   archive: migration 0011_ads_phase1_double_entry present" \
+  || { echo "  [FAIL] archive: prisma/migrations/0011_ads_phase1_double_entry MISSING"; archive_fail=1; }
+assert_file_contains "${VERIFY_DIR}/merklane/prisma/migrations/0011_ads_phase1_double_entry/migration.sql" "migrate:campaign:" \
+  "archive: migration 0011 carries the deterministic legacy transform"
+assert_file_contains "${VERIFY_DIR}/merklane/src/lib/ads/money.ts" 'MICRO_PER_USD = 1_000_000' \
+  "archive: money.ts micro-USD integer unit"
+assert_file_contains "${VERIFY_DIR}/merklane/src/lib/ads/wallet.ts" 'chargeReservation' \
+  "archive: wallet.ts ledger transaction service"
+assert_file_contains "${VERIFY_DIR}/merklane/src/lib/ads/auction.ts" 'pickPoolAndDraw' \
+  "archive: auction.ts 50/50 pool split"
+assert_file_contains "${VERIFY_DIR}/merklane/src/lib/ads/auction.ts" 'RESERVATION_TTL_MS = 30 * 60 * 1000' \
+  "archive: auction.ts 30-minute hold TTL"
+assert_file_contains "${VERIFY_DIR}/merklane/src/app/api/ads/click/route.ts" 'reservationId: z.string' \
+  "archive: click route keyed by reservation id"
+assert_file_contains "${VERIFY_DIR}/merklane/src/app/api/ads/wallet/route.ts" 'ledger:' \
+  "archive: wallet route exposes the ledger"
+assert_file_contains "${VERIFY_DIR}/merklane/src/components/site/ads/ad-slot.tsx" "ad.format === 'banner'" \
+  "archive: AdSlot banner format"
+assert_file_contains "${VERIFY_DIR}/merklane/src/components/site/ads/ads-dashboard.tsx" 'formatBanner' \
+  "archive: dashboard format chips"
+if grep -q 'model AdCampaign' "${VERIFY_DIR}/merklane/prisma/schema.prisma" || grep -q 'model AdCampaign' "${VERIFY_DIR}/merklane/prisma/schema.sqlite.prisma"; then
+  echo "  [FAIL] archive: pre-phase AdCampaign model still in a schema (stale bundle!)"
+  archive_fail=1
+else
+  echo "  [ok]   archive: no pre-phase AdCampaign model in either schema"
+fi
+if grep -rEq 'adBalance|AdImpression|bidPerView' "${VERIFY_DIR}/merklane/src"; then
+  echo "  [FAIL] archive: pre-phase ads references still in src/ (stale bundle!)"
+  grep -rEn 'adBalance|AdImpression|bidPerView' "${VERIFY_DIR}/merklane/src" | head -5
+  archive_fail=1
+else
+  echo "  [ok]   archive: no pre-phase ads references in src/"
+fi
+PHASE1_ARCHIVE_OK=0
+PHASE1_ARCHIVE_COUNT="$(ls -1 "${VERIFY_DIR}/merklane/src/i18n/messages" | grep -c '\.ts$')"
+for PHASE1_ARCHIVE_FILE in "${VERIFY_DIR}"/merklane/src/i18n/messages/*.ts; do
+  if grep -q "bidSuffixCpc:" "${PHASE1_ARCHIVE_FILE}" && grep -q "ledgerTitle:" "${PHASE1_ARCHIVE_FILE}"; then
+    PHASE1_ARCHIVE_OK=$((PHASE1_ARCHIVE_OK + 1))
+  else
+    echo "  [FAIL] archive: ${PHASE1_ARCHIVE_FILE##*/} missing Phase-1 ads keys"
+    archive_fail=1
+  fi
+done
+[ "${PHASE1_ARCHIVE_OK}" -eq "${PHASE1_ARCHIVE_COUNT}" ] && echo "  [ok]   archive: Phase-1 ads keys in ${PHASE1_ARCHIVE_OK}/${PHASE1_ARCHIVE_COUNT} dictionaries" \
+  || { echo "  [FAIL] archive: Phase-1 ads keys only ${PHASE1_ARCHIVE_OK}/${PHASE1_ARCHIVE_COUNT}"; archive_fail=1; }
+[ -f "${VERIFY_DIR}/merklane/scripts/apply-migration-sql.ts" ] && echo "  [ok]   archive: local migration applier ships" \
+  || { echo "  [FAIL] archive: scripts/apply-migration-sql.ts MISSING"; archive_fail=1; }
+assert_file_contains "${VERIFY_DIR}/merklane/scripts/test-ads-e2e.ts" 'ledgerInvariant' \
+  "archive: ads e2e carries the ledger invariant check"
 # Cross-check: every file listed in the archive MANIFEST exists after extraction
 MANIFEST_COUNT="$(wc -l < "${VERIFY_DIR}/merklane/MANIFEST" | tr -d ' ')"
 MISSING_IN_ARCHIVE="$(cd "${VERIFY_DIR}/merklane" && while IFS= read -r f; do [ -f "${f}" ] || echo "${f}"; done < MANIFEST | head -5)"

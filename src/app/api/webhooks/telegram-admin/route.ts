@@ -26,12 +26,17 @@ import { parseBulkJobText } from '@/lib/bots/bulk-parse'
 import { POST_SECTIONS, SECTION_META } from '@/lib/constants'
 import {
   SITE_LOGO_KEY,
-  TEAM_MEMBER_KEYS,
   setSiteSetting,
-  siteSettingTeamKey,
-  teamMemberLabel,
-  type TeamMemberKey,
 } from '@/lib/site-settings'
+import {
+  TEAM_LIMITS,
+  createTeamMember,
+  deleteTeamMember,
+  getTeamMember,
+  getTeamMembers,
+  updateTeamMember,
+  type TeamMemberRow,
+} from '@/lib/team'
 
 /**
  * POST /api/webhooks/telegram-admin — the ADMIN INTAKE BOT webhook.
@@ -72,7 +77,8 @@ const HELP_TEXT = [
   'Confirm the parsed fields with the inline buttons. Done.',
   '',
   '<b>Site content (CMS)</b>',
-  '👥 Manage team — set each member\u2019s bio and avatar photo.',
+  '👥 Manage team — add, edit or remove /about team members:',
+  'name, role, bio, avatar photo, social link — all from Telegram.',
   '🖼 Change logo — upload the browser tab icon (favicon).',
   'Changes go live within a minute (60 s cache).',
   '',
@@ -104,24 +110,106 @@ const mainMenu: Keyboard = {
   ],
 }
 
-/** Team CMS root: one button per member (matches about-content.ts). */
-function teamMenuKeyboard(): Keyboard {
+/** Team CMS root: one button per DB member + add-new + back. */
+function teamMenuKeyboard(members: TeamMemberRow[]): Keyboard {
   return {
     inline_keyboard: [
-      ...TEAM_MEMBER_KEYS.map((m) => row(cb(`👤 ${teamMemberLabel(m)}`, `member:${m}`))),
+      ...members.map((m) =>
+        row(cb(`👤 ${m.name}${m.role ? ` · ${m.role}` : ''}`, `member:${m.id}`)),
+      ),
+      row(cb('➕ Add New Member', 'teamadd')),
       row(cb('⬅️ Menu', 'menu')),
     ],
   }
 }
 
-/** Per-member actions: bio text or avatar photo. */
-function memberMenuKeyboard(member: TeamMemberKey): Keyboard {
+/** Per-member actions: every field of the /about card is editable. */
+function memberMenuKeyboard(id: string): Keyboard {
   return {
     inline_keyboard: [
-      row(cb('✏️ Bio', `bio:${member}`), cb('🖼 Avatar', `avatar:${member}`)),
+      row(cb('✏️ Edit Name', `mname:${id}`), cb('✏️ Edit Role', `mrole:${id}`)),
+      row(cb('📝 Edit Bio', `mbio:${id}`), cb('🖼 Upload Avatar', `mavatar:${id}`)),
+      row(cb('🔗 Edit Social URL', `msocial:${id}`)),
+      row(cb('🗑 Remove Member', `mremove:${id}`)),
       row(cb('⬅️ Team', 'team'), cb('⬅️ Menu', 'menu')),
     ],
   }
+}
+
+/** Destructive removal is a two-tap action — confirm first. */
+function removeConfirmKeyboard(id: string): Keyboard {
+  return {
+    inline_keyboard: [
+      row(cb('🗑 Yes, remove', `mremove2:${id}`)),
+      row(cb('⬅️ Keep member', `member:${id}`)),
+    ],
+  }
+}
+
+/**
+ * Editable member fields, keyed by callback action: each carries the CMS
+ * state to save (typed factory — keeps the CmsTarget discriminated union
+ * intact) and the prompt copy rendered while awaiting input.
+ */
+const MEMBER_FIELD_ACTIONS: Record<
+  string,
+  { cms: (id: string) => CmsTarget; prompt: (m: TeamMemberRow) => string[] }
+> = {
+  mname: {
+    cms: (id) => ({ kind: 'name', memberId: id }),
+    prompt: (m) => [
+      `<b>✏️ Name for ${esc(m.name)}</b>`,
+      '',
+      `Send the new name (${TEAM_LIMITS.nameMin}\u2013${TEAM_LIMITS.nameMax} characters). The card updates within a minute.`,
+      '',
+      '<i>Send /cancel to abort.</i>',
+    ],
+  },
+  mrole: {
+    cms: (id) => ({ kind: 'role', memberId: id }),
+    prompt: (m) => [
+      `<b>✏️ Role for ${esc(m.name)}</b>`,
+      '',
+      `Send the new role / job title shown under the name (up to ${TEAM_LIMITS.roleMax} characters), or <code>clear</code> to remove it.`,
+      `Current: ${m.role ? esc(m.role) : '—'}`,
+      '',
+      '<i>Send /cancel to abort.</i>',
+    ],
+  },
+  mbio: {
+    cms: (id) => ({ kind: 'bio', memberId: id }),
+    prompt: (m) => [
+      `<b>📝 Bio for ${esc(m.name)}</b>`,
+      '',
+      `Send the new bio as plain text (up to ${TEAM_LIMITS.bioMax} characters), or <code>clear</code> to remove it.`,
+      `Current: ${m.bio ? `${m.bio.length} characters` : '—'}`,
+      'The current bio is replaced completely.',
+      '',
+      '<i>Send /cancel to abort.</i>',
+    ],
+  },
+  msocial: {
+    cms: (id) => ({ kind: 'social', memberId: id }),
+    prompt: (m) => [
+      `<b>🔗 Social link for ${esc(m.name)}</b>`,
+      '',
+      'Send the public profile URL (https://t.me/\u2026, LinkedIn, GitHub, \u2026) — the whole /about card becomes this link — or <code>clear</code> to remove it.',
+      `Current: ${m.socialUrl ? esc(m.socialUrl) : '—'}`,
+      '',
+      '<i>Send /cancel to abort.</i>',
+    ],
+  },
+  mavatar: {
+    cms: (id) => ({ kind: 'avatar', memberId: id }),
+    prompt: (m) => [
+      `<b>🖼 Avatar for ${esc(m.name)}</b>`,
+      '',
+      'Send the photo now — square works best (rendered at 56px).',
+      'The current avatar is replaced completely.',
+      '',
+      '<i>Send /cancel to abort.</i>',
+    ],
+  },
 }
 
 const cancelOnlyKeyboard: Keyboard = { inline_keyboard: [row(cb('❌ Cancel', 'abort'))] }
@@ -157,9 +245,19 @@ type Step = 'paste' | 'confirm' | 'cms'
 type Draft = {
   spec?: JobIntakeSpec
   guesses?: string[]
-  /** CMS flow target while step === 'cms' (team bio/avatar, site logo). */
-  cms?: { kind: 'bio' | 'avatar' | 'logo'; member?: TeamMemberKey }
+  /** CMS flow target while step === 'cms' (team CMS, site logo). */
+  cms?: CmsTarget
 }
+
+/** Team CMS state — what the next non-command message means. */
+type CmsTarget =
+  | { kind: 'logo' }
+  | { kind: 'avatar'; memberId: string }
+  | { kind: 'bio'; memberId: string }
+  | { kind: 'name'; memberId: string }
+  | { kind: 'role'; memberId: string }
+  | { kind: 'social'; memberId: string }
+  | { kind: 'add-member'; step: 'name' | 'role' | 'social'; name?: string; role?: string }
 
 function esc(s: string): string {
   return tgEscape(s)
@@ -169,6 +267,29 @@ function sectionLabel(section: string | undefined): string {
   if (!section) return '—'
   const meta = SECTION_META[section as keyof typeof SECTION_META]
   return meta ? meta.title : section
+}
+
+/** Compact member card for bot messages (bio truncated for chat). */
+function memberSummary(m: TeamMemberRow): string {
+  const bio = m.bio ? (m.bio.length > 120 ? `${m.bio.slice(0, 117)}…` : m.bio) : ''
+  return [
+    `<b>👤 ${esc(m.name)}</b>${m.role ? ` — ${esc(m.role)}` : ''}`,
+    bio ? `Bio: ${esc(bio)}` : 'Bio: —',
+    `Avatar: ${m.avatarUrl ? 'photo' : 'initials'} · Social: ${m.socialUrl ? esc(m.socialUrl) : '—'} · Position: ${m.order + 1}`,
+  ].join('\n')
+}
+
+/** Validate operator-supplied http(s) URL; null when invalid. */
+function parseSocialUrl(raw: string): string | null {
+  const url = raw.trim()
+  if (url.length > TEAM_LIMITS.urlMax) return null
+  try {
+    const u = new URL(url)
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return null
+    return u.toString()
+  } catch {
+    return null
+  }
 }
 
 async function getState(adminUserId: string): Promise<{ step: Step; draft: Draft } | null> {
@@ -331,14 +452,37 @@ async function handleCallback(update: TelegramUpdate, fromId: string, chatId: st
     return
   }
 
-  // --- Site CMS: team bios/avatars + site logo ----------------------------
+  // --- Site CMS: team members (dynamic TeamMember table) + site logo -------
   if (data === 'team') {
     await clearState(fromId)
+    const members = await getTeamMembers()
     await edit(
       chatId,
       messageId,
-      '<b>👥 Manage team</b>\nPick a member to edit their bio or avatar.',
-      teamMenuKeyboard(),
+      [
+        '<b>👥 Manage team</b>',
+        members.length === 0
+          ? 'No members yet — add the first one with ➕ Add New Member.'
+          : `Pick a member to edit, or add a new one.\n${members.length} member${members.length === 1 ? '' : 's'} on /about, in card order.`,
+      ].join('\n'),
+      teamMenuKeyboard(members),
+    )
+    return
+  }
+  if (data === 'teamadd') {
+    await setState(fromId, 'cms', { cms: { kind: 'add-member', step: 'name' } })
+    await edit(
+      chatId,
+      messageId,
+      [
+        '<b>➕ Add a new team member</b>',
+        '',
+        '<b>Step 1/3 — Name</b>',
+        `Send the display name (${TEAM_LIMITS.nameMin}\u2013${TEAM_LIMITS.nameMax} characters).`,
+        '',
+        '<i>Send /cancel to abort \u2014 nothing is saved until the last step.</i>',
+      ].join('\n'),
+      cancelOnlyKeyboard,
     )
     return
   }
@@ -361,62 +505,65 @@ async function handleCallback(update: TelegramUpdate, fromId: string, chatId: st
     return
   }
   if (data.startsWith('member:')) {
-    const member = data.slice(7) as TeamMemberKey
-    if (!(TEAM_MEMBER_KEYS as readonly string[]).includes(member)) {
-      await telegramAnswerCallbackQuery(cq.id, 'Unknown member.', { token: TOKEN, showAlert: true })
+    const id = data.slice(7)
+    const member = await getTeamMember(id)
+    if (!member) {
+      await telegramAnswerCallbackQuery(cq.id, 'Member not found — refresh with ⬅️ Team.', { token: TOKEN, showAlert: true })
       return
     }
     await clearState(fromId)
-    await edit(
-      chatId,
-      messageId,
-      `<b>👤 ${teamMemberLabel(member)}</b>\nWhat do you want to change?`,
-      memberMenuKeyboard(member),
-    )
+    await edit(chatId, messageId, `${memberSummary(member)}\n\nWhat do you want to change?`, memberMenuKeyboard(member.id))
     return
   }
-  if (data.startsWith('bio:')) {
-    const member = data.slice(4) as TeamMemberKey
-    if (!(TEAM_MEMBER_KEYS as readonly string[]).includes(member)) {
-      await telegramAnswerCallbackQuery(cq.id, 'Unknown member.', { token: TOKEN, showAlert: true })
+
+  // Per-member edit prompts: mname/mrole/mbio/msocial/mavatar/mremove(+confirm).
+  const memberAction = /^(mname|mrole|mbio|msocial|mavatar|mremove2?):(.+)$/.exec(data)
+  if (memberAction) {
+    const [, action, id] = memberAction
+    const member = await getTeamMember(id)
+    if (!member) {
+      await telegramAnswerCallbackQuery(cq.id, 'Member not found — refresh with ⬅️ Team.', { token: TOKEN, showAlert: true })
       return
     }
-    await setState(fromId, 'cms', { cms: { kind: 'bio', member } })
-    await edit(
-      chatId,
-      messageId,
-      [
-        `<b>✏️ Bio for ${teamMemberLabel(member)}</b>`,
-        '',
-        'Send the new bio as plain text (up to 400 characters).',
-        'The current bio is replaced completely.',
-        '',
-        '<i>Send /cancel to abort.</i>',
-      ].join('\n'),
-      cancelOnlyKeyboard,
-    )
-    return
-  }
-  if (data.startsWith('avatar:')) {
-    const member = data.slice(7) as TeamMemberKey
-    if (!(TEAM_MEMBER_KEYS as readonly string[]).includes(member)) {
-      await telegramAnswerCallbackQuery(cq.id, 'Unknown member.', { token: TOKEN, showAlert: true })
+
+    if (action === 'mremove') {
+      await clearState(fromId)
+      await edit(
+        chatId,
+        messageId,
+        [
+          `<b>🗑 Remove ${esc(member.name)}?</b>`,
+          '',
+          'The member disappears from /about immediately (60 s cache).',
+          'This cannot be undone — you would have to add them again.',
+        ].join('\n'),
+        removeConfirmKeyboard(id),
+      )
       return
     }
-    await setState(fromId, 'cms', { cms: { kind: 'avatar', member } })
-    await edit(
-      chatId,
-      messageId,
-      [
-        `<b>🖼 Avatar for ${teamMemberLabel(member)}</b>`,
-        '',
-        'Send the photo now — square works best (rendered at 56px).',
-        'The current avatar is replaced completely.',
-        '',
-        '<i>Send /cancel to abort.</i>',
-      ].join('\n'),
-      cancelOnlyKeyboard,
-    )
+    if (action === 'mremove2') {
+      await clearState(fromId)
+      const gone = await deleteTeamMember(id)
+      await edit(
+        chatId,
+        messageId,
+        gone
+          ? `🗑 <b>${esc(member.name)}</b> removed from /about.`
+          : `⚠️ Could not remove ${esc(member.name)} — already gone?`,
+        teamMenuKeyboard(await getTeamMembers()),
+      )
+      if (gone) {
+        await db.ingestionLog
+          .create({ data: { source: 'telegram', action: 'team-remove', actor: `tg-admin:${fromId}`, detail: id } })
+          .catch(() => undefined)
+      }
+      return
+    }
+
+    const field = MEMBER_FIELD_ACTIONS[action]
+    if (!field) return // unreachable — the regex only matches known actions
+    await setState(fromId, 'cms', { cms: field.cms(id) })
+    await edit(chatId, messageId, field.prompt(member).join('\n'), cancelOnlyKeyboard)
     return
   }
 
@@ -462,6 +609,165 @@ async function handleCallback(update: TelegramUpdate, fromId: string, chatId: st
     return
   }
   await telegramAnswerCallbackQuery(cq.id, 'Unknown button — /start', { token: TOKEN, showAlert: true })
+}
+
+// ---------------------------------------------------------------------------
+// Team CMS text capture (step 'cms')
+// ---------------------------------------------------------------------------
+
+/**
+ * Non-command text while step === 'cms': routed by the cms target saved in
+ * the admin's draft. Covers the ➕ Add-member wizard (name → role → social)
+ * and every per-field edit of an existing member. Every path validates its
+ * input length/shape and re-renders a sane next step on bad input.
+ */
+async function handleCmsText(fromId: string, chatId: string, cms: CmsTarget, text: string): Promise<void> {
+  const clean = text.trim()
+
+  // --- ➕ Add-member wizard -------------------------------------------------
+  if (cms.kind === 'add-member') {
+    if (cms.step === 'name') {
+      if (clean.length < TEAM_LIMITS.nameMin || clean.length > TEAM_LIMITS.nameMax || clean.includes('\n')) {
+        await send(chatId, `⚠️ Name must be ${TEAM_LIMITS.nameMin}\u2013${TEAM_LIMITS.nameMax} characters on one line. Try again, or /cancel.`)
+        return
+      }
+      await setState(fromId, 'cms', { cms: { ...cms, step: 'role', name: clean } })
+      await send(
+        chatId,
+        [
+          `✅ Name: <b>${esc(clean)}</b>`,
+          '',
+          '<b>Step 2/3 \u2014 Role</b>',
+          'Send the role / job title shown under the name (e.g. \u201cCEO\u201d,',
+          '\u201cProgrammer\u201d, \u201cHead of Content\u201d), or send <code>skip</code> for none.',
+          '',
+          '<i>Send /cancel to abort \u2014 nothing is saved yet.</i>',
+        ].join('\n'),
+      )
+      return
+    }
+    if (cms.step === 'role') {
+      const role = /^skip$/i.test(clean) ? '' : clean
+      // 'skip' yields an EMPTY role by design — validate the raw input, not
+      // the emptied result, or the explicit skip is rejected as too short.
+      if (!clean || clean.includes('\n') || role.length > TEAM_LIMITS.roleMax) {
+        await send(chatId, `⚠️ Role must be 1\u2013${TEAM_LIMITS.roleMax} characters (or <code>skip</code>). Try again, or /cancel.`)
+        return
+      }
+      await setState(fromId, 'cms', { cms: { ...cms, step: 'social', role } })
+      await send(
+        chatId,
+        [
+          `✅ Role: <b>${role ? esc(role) : '\u2014'}</b>`,
+          '',
+          '<b>Step 3/3 \u2014 Social link</b>',
+          'Send the public profile URL (https://t.me/\u2026, LinkedIn, GitHub, \u2026) \u2014',
+          'the whole /about card becomes this link \u2014 or <code>skip</code> for no link.',
+          '',
+          '<i>Send /cancel to abort \u2014 nothing is saved yet.</i>',
+        ].join('\n'),
+      )
+      return
+    }
+    // step === 'social' — final step, everything is saved now.
+    let socialUrl: string | null = null
+    if (!/^skip$/i.test(clean)) {
+      const parsed = parseSocialUrl(clean)
+      if (!parsed) {
+        await send(chatId, '⚠️ That does not look like a link. Send a URL starting with http:// or https://, or <code>skip</code>.')
+        return
+      }
+      socialUrl = parsed
+    }
+    const name = cms.name ?? ''
+    if (!name) {
+      await clearState(fromId)
+      await send(chatId, '⚠️ Lost the draft \u2014 start again from \u200b👥 Manage team \u2192 ➕ Add New Member.', mainMenu)
+      return
+    }
+    const created = await createTeamMember({ name, role: cms.role ?? '', socialUrl })
+    await clearState(fromId)
+    await send(
+      chatId,
+      [
+        `✅ <b>${esc(created.name)}</b> added to /about${created.role ? ` as ${esc(created.role)}` : ''}${created.socialUrl ? ' \u2014 the card links to their profile' : ''}.`,
+        'Visible within a minute (60 s cache).',
+      ].join('\n'),
+      memberMenuKeyboard(created.id),
+    )
+    await db.ingestionLog
+      .create({ data: { source: 'telegram', action: 'team-add', actor: `tg-admin:${fromId}`, detail: created.id } })
+      .catch(() => undefined)
+    return
+  }
+
+  // --- Per-field edits on an existing member --------------------------------
+  if (cms.kind === 'logo') return // logo expects a photo, not text
+  const member = await getTeamMember(cms.memberId)
+  if (!member) {
+    await clearState(fromId)
+    await send(chatId, '⚠️ That member no longer exists — start again from 👥 Manage team.', mainMenu)
+    return
+  }
+
+  const done = async (line: string, action: string): Promise<void> => {
+    await clearState(fromId)
+    await send(chatId, line, memberMenuKeyboard(member.id))
+    await db.ingestionLog
+      .create({ data: { source: 'telegram', action, actor: `tg-admin:${fromId}`, detail: `${member.id} · ${member.name}` } })
+      .catch(() => undefined)
+  }
+
+  if (cms.kind === 'avatar') {
+    await send(chatId, '📷 I am waiting for a photo for this member — send the image, or /cancel.')
+    return
+  }
+  if (cms.kind === 'name') {
+    if (clean.length < TEAM_LIMITS.nameMin || clean.length > TEAM_LIMITS.nameMax || clean.includes('\n')) {
+      await send(chatId, `⚠️ Name must be ${TEAM_LIMITS.nameMin}\u2013${TEAM_LIMITS.nameMax} characters on one line. Try again, or /cancel.`)
+      return
+    }
+    await updateTeamMember(member.id, { name: clean })
+    await done(`✅ Name updated: <b>${esc(clean)}</b>.\n/about picks it up within a minute.`, 'team-edit-name')
+    return
+  }
+  if (cms.kind === 'role') {
+    const role = /^clear$/i.test(clean) ? '' : clean
+    // 'clear' yields an EMPTY role by design — validate the raw input.
+    if (!clean || clean.includes('\n') || role.length > TEAM_LIMITS.roleMax) {
+      await send(chatId, `⚠️ Role must be 1\u2013${TEAM_LIMITS.roleMax} characters (or <code>clear</code>). Try again, or /cancel.`)
+      return
+    }
+    await updateTeamMember(member.id, { role })
+    await done(`✅ Role for <b>${esc(member.name)}</b> updated: <b>${role ? esc(role) : '\u2014'}</b>.`, 'team-edit-role')
+    return
+  }
+  if (cms.kind === 'bio') {
+    const bio = /^clear$/i.test(clean) ? '' : clean
+    // 'clear' → empty bio is allowed; any real bio must be 3–400 chars.
+    if (!clean || (bio.length > 0 && (bio.length < 3 || bio.length > TEAM_LIMITS.bioMax))) {
+      await send(chatId, `⚠️ Bio must be 3\u2013${TEAM_LIMITS.bioMax} characters (or <code>clear</code>). Try again, or /cancel.`)
+      return
+    }
+    await updateTeamMember(member.id, { bio })
+    await done(`✅ Bio for <b>${esc(member.name)}</b> saved.\n/about picks it up within a minute.`, 'team-edit-bio')
+    return
+  }
+  // cms.kind === 'social'
+  let socialUrl: string | null = null
+  if (!/^clear$/i.test(clean)) {
+    const parsed = parseSocialUrl(clean)
+    if (!parsed) {
+      await send(chatId, '⚠️ That does not look like a link. Send a URL starting with http:// or https://, or <code>clear</code>.')
+      return
+    }
+    socialUrl = parsed
+  }
+  await updateTeamMember(member.id, { socialUrl })
+  await done(
+    `✅ Social link for <b>${esc(member.name)}</b> ${socialUrl ? `updated: ${esc(socialUrl)}` : 'removed'}.`,
+    'team-edit-social',
+  )
 }
 
 async function handleMessage(update: TelegramUpdate, fromId: string, chatId: string, isAdmin: boolean): Promise<void> {
@@ -559,29 +865,14 @@ async function handleMessage(update: TelegramUpdate, fromId: string, chatId: str
   }
 
   // Non-command text → three possible flows, in priority order:
-  //   1. CMS bio capture (step 'cms', kind 'bio')
+  //   1. CMS text capture (step 'cms': team wizard / field edits)
   //   2. bulk paste    (step 'paste' / 'confirm')
   //   3. hint          (no active state)
   if (!isAdmin) return void (await deny(chatId))
   const state = await getState(fromId)
 
-  if (state?.step === 'cms' && state.draft.cms?.kind === 'bio' && state.draft.cms.member) {
-    const member = state.draft.cms.member
-    const bio = text.trim()
-    if (bio.length < 3 || bio.length > 400) {
-      await send(chatId, '⚠️ Bio must be 3–400 characters. Try again, or /cancel.')
-      return
-    }
-    await setSiteSetting(siteSettingTeamKey(member, 'bio'), bio)
-    await clearState(fromId)
-    await send(
-      chatId,
-      `✅ Bio for <b>${teamMemberLabel(member)}</b> saved.\n/about picks it up within a minute.`,
-      mainMenu,
-    )
-    await db.ingestionLog
-      .create({ data: { source: 'telegram', action: 'cms-bio-set', actor: `tg-admin:${fromId}`, detail: member } })
-      .catch(() => undefined)
+  if (state?.step === 'cms' && state.draft.cms) {
+    await handleCmsText(fromId, chatId, state.draft.cms, text)
     return
   }
 
@@ -609,8 +900,9 @@ async function deny(chatId: string): Promise<void> {
 
 /**
  * A photo message while step === 'cms' with kind avatar/logo: download the
- * LARGEST size Telegram offers, store it as a data-URL SiteSetting and
- * confirm. Photos outside the flow get a hint instead of being eaten.
+ * LARGEST size Telegram offers, store it as a data-URL (site logo SiteSetting
+ * / TeamMember.avatarUrl) and confirm. Photos outside the flow get a hint
+ * instead of being eaten.
  */
 async function handlePhoto(update: TelegramUpdate, fromId: string, chatId: string, isAdmin: boolean): Promise<void> {
   if (!isAdmin) return void (await deny(chatId))
@@ -647,18 +939,35 @@ async function handlePhoto(update: TelegramUpdate, fromId: string, chatId: strin
       `✅ Site logo updated (${(download.bytes / 1024).toFixed(0)} KB). The browser tab icon updates within a minute.`,
       mainMenu,
     )
-  } else if (cms.member) {
-    const member = cms.member
-    await setSiteSetting(siteSettingTeamKey(member, 'avatar'), download.dataUrl)
+  } else {
+    const member = await getTeamMember(cms.memberId)
+    if (!member) {
+      await clearState(fromId)
+      await send(chatId, '⚠️ That member no longer exists — start again from 👥 Manage team.', mainMenu)
+      return
+    }
+    const updated = await updateTeamMember(member.id, { avatarUrl: download.dataUrl })
+    if (!updated) {
+      await clearState(fromId)
+      await send(chatId, `⚠️ Could not save the avatar for <b>${esc(member.name)}</b> — try again from 👥 Manage team.`, mainMenu)
+      return
+    }
     await clearState(fromId)
     await send(
       chatId,
-      `✅ Avatar for <b>${teamMemberLabel(member)}</b> updated (${(download.bytes / 1024).toFixed(0)} KB).`,
-      mainMenu,
+      `✅ Avatar for <b>${esc(member.name)}</b> updated (${(download.bytes / 1024).toFixed(0)} KB).`,
+      memberMenuKeyboard(member.id),
     )
-  } else {
-    await clearState(fromId)
-    await send(chatId, '⚠️ Lost track of the member — start again from 👥 Manage team.', mainMenu)
+    await db.ingestionLog
+      .create({
+        data: {
+          source: 'telegram',
+          action: 'team-avatar-set',
+          actor: `tg-admin:${fromId}`,
+          detail: `${member.id} · ${member.name} · ${download.bytes}B`,
+        },
+      })
+      .catch(() => undefined)
     return
   }
 
@@ -666,9 +975,9 @@ async function handlePhoto(update: TelegramUpdate, fromId: string, chatId: strin
     .create({
       data: {
         source: 'telegram',
-        action: `cms-${cms.kind}-set`,
+        action: 'cms-logo-set',
         actor: `tg-admin:${fromId}`,
-        detail: `${cms.kind === 'avatar' ? cms.member : 'logo'} · ${download.bytes}B`,
+        detail: `logo · ${download.bytes}B`,
       },
     })
     .catch(() => undefined)
@@ -704,7 +1013,11 @@ export async function POST(req: Request) {
   const chatId = String(chat.id)
   const isAdmin = telegramAdminIds().has(fromId)
 
-  const rl = rateLimit(`tg-admin-webhook:${chatId}`, 30, 60_000)
+  // Per-chat sliding window. 60/min: the team CMS is tap-heavy (each button
+  // click AND each typed message is one update — an add-member flow alone is
+  // 4-5), so 30/min cut real admins off mid-flow; the webhook secret already
+  // blocks forged floods, this only guards runaway loops.
+  const rl = rateLimit(`tg-admin-webhook:${chatId}`, 60, 60_000)
   if (!rl.ok) return jsonOk({ ignored: true, reason: 'rate_limited' })
 
   if (!isAdmin) {

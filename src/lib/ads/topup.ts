@@ -4,12 +4,19 @@
  * An advertiser creates a pending CryptoTopUp from the Wallet tab and is
  * shown a UNIQUE deposit address together with the expected amount. Once
  * the incoming payment is confirmed the top-up flips to "confirmed" and
- * the amount is credited to the advertiser's WALLET (User.adBalance) —
- * exactly once (the status field guards the double credit) — and, when the
- * advertiser was referred, 50% of the credited amount lands in the
- * referrer's referralBalance inside the same transaction. Campaign budgets
- * are allocated from the wallet separately (campaign create / "add funds"),
- * so deposits work even before any campaign exists.
+ * the amount is credited to the advertiser's unified WALLET
+ * (Wallet.availableMicroUsd + an immutable LedgerEntry of type CREDIT —
+ * exactly once: the status field guards the double credit, and the ledger
+ * eventId `topup:<id>` is unique so a replayed webhook can never post a
+ * second row) — and, when the advertiser was referred, 50% of the credited
+ * amount lands in the referrer's referralBalance inside the same
+ * transaction. Campaign budgets are reserved from the wallet separately
+ * (campaign create / "add funds"), so deposits work even before any
+ * campaign exists.
+ *
+ * The top-up domain keeps US-cent integers (CryptoTopUp, referral
+ * commissions); cents are converted to micro-USD exactly once, at the
+ * wallet boundary (1 cent = 10 000 µUSD).
  *
  * Providers (ADS_TOPUP_MODE, auto-resolved — see topUpMode()):
  *   • blockbee — production. The BlockBee processor (src/lib/ads/blockbee.ts)
@@ -28,6 +35,8 @@ import type { Prisma } from '@prisma/client'
 import { db } from '@/lib/db'
 import { env } from '@/lib/env'
 import { blockbeeConfigured } from '@/lib/ads/blockbee'
+import { creditWalletTopUp } from '@/lib/ads/wallet'
+import { centsToMicro } from '@/lib/ads/money'
 import { creditReferralCommission } from '@/lib/referral'
 
 export const TOPUP_MIN_CENTS = 500 // $5.00 — keeps the ledger free of dust
@@ -113,12 +122,14 @@ export async function confirmTopUp(
       where: { id: topUpId },
       data: { amountReceived: received },
     })
-    // The credit lands in the advertiser WALLET — campaign budgets are
-    // allocated from it later (campaign create / "add funds"), so a deposit
-    // is never blocked on a campaign existing.
-    await tx.user.update({
-      where: { id: topUp.advertiserId },
-      data: { adBalance: { increment: received } },
+    // The credit lands in the advertiser's unified WALLET (immutable CREDIT
+    // ledger row, eventId topup:<id> — idempotent against IPN retries) —
+    // campaign budgets are reserved from it later (campaign create / "add
+    // funds"), so a deposit is never blocked on a campaign existing.
+    await creditWalletTopUp(tx, {
+      userId: topUp.advertiserId,
+      amountMicroUsd: centsToMicro(received),
+      eventId: `topup:${topUp.id}`,
     })
 
     // Referral commission — same transaction, guarded by the flip above.

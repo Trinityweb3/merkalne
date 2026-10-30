@@ -222,8 +222,8 @@ export function ProfileDashboard({ initialTab }: { initialTab?: Tab }) {
 
       <div className="account-layout">
         <aside className="card account-sidebar" aria-label="Account navigation">
-          <div className="account-id">
-            <strong>{user.email}</strong>
+          <div className="account-id min-w-0">
+            <strong className="break-all">{user.email}</strong>
             <p className="muted tiny" style={{ marginTop: 4 }}>
               Member since {formatDate(user.createdAt)}
             </p>

@@ -1,36 +1,27 @@
 /**
  * SiteSettings — the operator-managed CMS behind the Telegram admin bot.
  *
- * The admin bot's "Manage team" / "Change logo" flows write key/value rows
- * into the SiteSetting table (uploaded photos as base64 data URLs, bios as
- * plain text). Everything is read here with a short in-process cache so
- * /about, /api/favicon and other readers never add a DB round trip per
- * request — a 60-second staleness window is perfectly fine for operator
- * content.
+ * The admin bot's "Change logo" flow writes a key/value row into the
+ * SiteSetting table (uploaded photos as base64 data URLs). Everything is read
+ * here with a short in-process cache so /api/favicon and other readers never
+ * add a DB round trip per request — a 60-second staleness window is perfectly
+ * fine for operator content.
  *
  * Keys (single source of truth — keep in sync with the bot route):
- *   current_logo_url       browser tab icon — served by /api/favicon
- *                          (never rendered as an <img> on the page)
- *   team_<member>_avatar   uploaded avatar (data URL)
- *   team_<member>_bio      bio text
- * with <member> ∈ TEAM_MEMBER_KEYS (vazima / trinity / grobofhik).
+ *   current_logo_url   browser tab icon — served by /api/favicon
+ *                      (never rendered as an <img> on the page)
+ *
+ * Team content NO LONGER lives here: the /about team section is fully dynamic
+ * through the TeamMember table (see src/lib/team.ts). The legacy
+ * team_<member>_bio / team_<member>_avatar rows are merged into TeamMember
+ * rows once by the lazy seed in team.ts and are not read afterwards.
  */
 import { db } from '@/lib/db'
 
-/** Telegram-bot-editable team member keys (matches about-content.ts order). */
-export const TEAM_MEMBER_KEYS = ['vazima', 'trinity', 'grobofhik'] as const
-export type TeamMemberKey = (typeof TEAM_MEMBER_KEYS)[number]
-
 export const SITE_LOGO_KEY = 'current_logo_url'
-
-export interface TeamMemberOverride {
-  avatar?: string
-  bio?: string
-}
 
 export interface SiteOverrides {
   logo?: string
-  team: Partial<Record<TeamMemberKey, TeamMemberOverride>>
 }
 
 // ---------------------------------------------------------------------------
@@ -40,23 +31,10 @@ export interface SiteOverrides {
 const TTL_MS = 60_000
 let cache: { at: number; data: SiteOverrides } | null = null
 
-function teamKey(member: TeamMemberKey, field: 'avatar' | 'bio'): string {
-  return `team_${member}_${field}`
-}
-
 function parseOverrides(rows: { key: string; value: string }[]): SiteOverrides {
-  const out: SiteOverrides = { team: {} }
+  const out: SiteOverrides = {}
   for (const { key, value } of rows) {
-    if (key === SITE_LOGO_KEY) {
-      out.logo = value
-      continue
-    }
-    const m = /^team_(vazima|trinity|grobofhik)_(avatar|bio)$/.exec(key)
-    if (m) {
-      const member = m[1] as TeamMemberKey
-      const field = m[2] as 'avatar' | 'bio'
-      out.team[member] = { ...(out.team[member] ?? {}), [field]: value }
-    }
+    if (key === SITE_LOGO_KEY) out.logo = value
   }
   return out
 }
@@ -91,10 +69,3 @@ export async function clearSiteSetting(key: string): Promise<void> {
   await db.siteSetting.deleteMany({ where: { key } })
   cache = null
 }
-
-/** Human label for a member key inside bot messages. */
-export function teamMemberLabel(member: TeamMemberKey): string {
-  return member.charAt(0).toUpperCase() + member.slice(1)
-}
-
-export { teamKey as siteSettingTeamKey }

@@ -51,10 +51,6 @@ model User {
   /// Referral commission balance in US cents — 50% of every confirmed
   /// top-up made by referred users. Withdrawn via BlockBee payouts.
   referralBalance Int     @default(0)
-  /// Advertiser WALLET balance in US cents. Crypto deposits (BlockBee IPN)
-  /// land here first; campaign budgets are drawn from it (the campaign's
-  /// own `balance` is the spendable flight budget the auction bills).
-  adBalance     Int     @default(0)
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
@@ -65,7 +61,10 @@ model User {
   reactions      Reaction[]
   bookmarks      Bookmark[]
   telegramLink   TelegramLink?
-  adCampaigns    AdCampaign[]
+  /// Phase-1 ads architecture: one advertiser wallet per user (micro-USD
+  /// double-entry ledger, see Wallet/LedgerEntry below).
+  wallet         Wallet?
+  campaigns      Campaign[]
   adTopUps       CryptoTopUp[]
   premiumOrders  PremiumOrder[]
   referredBy     User?                @relation("UserReferrals", fields: [referredById], references: [id], onDelete: SetNull)
@@ -394,20 +393,23 @@ model DailyStats {
 }
 
 // ---------------------------------------------------------------------------
-// Site CMS (Telegram-admin-bot-managed content: logo, team avatars & bios)
+// Site CMS (Telegram-admin-bot-managed content: logo, team members)
 // ---------------------------------------------------------------------------
 
 /**
  * Key-value store for operator-managed site content, written through the
- * Telegram admin bot (Manage Team / Change Logo flows). Values are plain
- * strings; uploaded images are stored as data URLs (base64) so they survive
- * container recreation without baking files into the Docker image.
+ * Telegram admin bot (Change Logo flow). Values are plain strings; uploaded
+ * images are stored as data URLs (base64) so they survive container
+ * recreation without baking files into the Docker image.
  *
  * Keys in use (see src/lib/site-settings.ts — the typed accessor):
- *   current_logo_url      site logo shown on /about (data URL)
- *   team_<member>_avatar  uploaded avatar for team member <member>
- *   team_<member>_bio     bio text for team member <member>
- * where <member> ∈ { vazima, trinity, grobofhik }.
+ *   current_logo_url   site favicon served by /api/favicon (data URL)
+ *
+ * Legacy keys (pre team-CMS era, merged into TeamMember rows once by the
+ * lazy seed in src/lib/team.ts, kept so existing deployments don't lose
+ * operator-uploaded content):
+ *   team_<member>_avatar  uploaded avatar (member ∈ vazima/trinity/grobofhik)
+ *   team_<member>_bio     bio text
  */
 model SiteSetting {
   key       String   @id
@@ -415,68 +417,237 @@ model SiteSetting {
   updatedAt DateTime @updatedAt
 }
 
+/**
+ * One team member card rendered on /about. Fully dynamic — rows are created,
+ * edited and removed through the Telegram admin bot (👥 Manage team →
+ * ➕ Add New Member / per-member edit / 🗑 Remove). `order` drives the card
+ * order on the page (ascending; ties broken by createdAt).
+ */
+model TeamMember {
+  id        String   @id @default(cuid())
+  /// Display name (1–60 chars, enforced by the bot).
+  name      String
+  /// Role / job title shown under the name (plain text, e.g. "CEO").
+  role      String   @default("")
+  /// Short bio (≤ 400 chars). Empty → localized placeholder on /about.
+  bio       String   @default("")
+  /// Photo: data URL (Telegram upload) or public image URL. Null → initials.
+  avatarUrl String?
+  /// Public profile link; when set the whole card becomes the link.
+  socialUrl String?
+  /// Sort key (ascending) — new members are appended at the end.
+  order     Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
 // ---------------------------------------------------------------------------
-// Merklane Ads — campaigns, weighted auction, impressions, crypto top-ups
+// Merklane Ads — Phase 1: double-entry wallet, campaign/creative structure,
+// budget reservations, crypto top-ups
 // ---------------------------------------------------------------------------
 
 /**
- * One advertiser campaign. Money is stored in US CENTS (Int) so the same
- * definition works on PostgreSQL and the SQLite preview without Decimal
- * columns: balance = remaining budget, bidPerView = price (and auction
- * weight) per SERVED impression.
+ * ONE advertiser wallet per user. All money is INTEGER micro-USD
+ * ($1.00 = 1_000_000 µUSD) — floats are never used for money anywhere.
  *
- * status: "active" (eligible for the auction) | "paused" (advertiser pause
- * OR balance drained to 0 — resume after a top-up) | "ended" (operator stop).
+ *   availableMicroUsd   spendable balance (top-ups land here)
+ *   reservedMicroUsd    money committed to the user's campaigns — the sum of
+ *                       each campaign's unspent budget (see Campaign below).
+ *
+ * Invariant, enforced by the ledger (LedgerEntry) and the conditional
+ * updateMany guards in src/lib/ads/wallet.ts:
+ *
+ *   available + reserved == Σ(CREDIT) − Σ(CHARGE)
+ *
+ * Wallet rows are created lazily on the first money event (getOrCreateWallet).
  */
-model AdCampaign {
-  id           String   @id @default(cuid())
-  advertiserId String
-  /// Card headline (plain text, ≤ 80 chars)
-  title        String
-  /// Card body copy (plain text, ≤ 200 chars)
-  body         String
-  /// Destination URL opened on click (https only)
-  ctaUrl       String
-  /// Optional button label override (default from the i18n dictionary)
-  ctaLabel     String?
-  /// Remaining budget in US cents; every served impression decrements this
-  balance      Int      @default(0)
-  /// Price per served impression in US cents — doubles as the auction weight
-  bidPerView   Int      @default(1)
-  /// Comma-separated target section slugs ("intern-junior,mid-senior").
-  /// Empty = match every section. Portable CSV instead of a scalar list
-  /// (see modelling rules at the top of this file).
-  targetSections String  @default("")
-  /// Comma-separated target locale codes ("en,ru"). Empty = every language.
-  targetLocales  String  @default("")
-  status       String   @default("active")
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+model Wallet {
+  id                String   @id @default(cuid())
+  userId            String   @unique
+  availableMicroUsd Int      @default(0)
+  reservedMicroUsd  Int      @default(0)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
 
-  advertiser  User            @relation(fields: [advertiserId], references: [id], onDelete: Cascade)
-  impressions AdImpression[]
-  topUps      CryptoTopUp[]
+  user  User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ledger LedgerEntry[]
+}
 
-  @@index([status, balance])
+/**
+ * Append-only money ledger — one row per movement against a wallet, the
+ * single source of truth for the ad budget. Rows are NEVER updated or
+ * deleted (the application layer exposes no mutation path; the column set
+ * has nothing to reconcile).
+ *
+ * type (validated in the app layer, no Prisma enums for SQLite portability):
+ *   credit   +amount  top-up confirmed (BlockBee IPN / admin / simulate)
+ *   reserve  −amount  wallet.available → committed to a campaign
+ *                     (campaign create / "add funds"; campaignId set)
+ *   charge   −amount  money SPENT — a CPC click or CPM view finalised its
+ *                     BudgetReservation; leaves the wallet for good
+ *                     (campaignId set)
+ *   refund   +amount  a deleted campaign's unspent budget released back to
+ *                     the wallet (campaignId set)
+ *
+ * eventId is UNIQUE and deterministic for every exactly-once-critical
+ * movement (topup:<id>, charge:<reservationId>, refund:<campaignId>) so
+ * processor retries can never double-post. Non-critical movements
+ * (fund:<campaignId>:<uuid>) carry a fresh id per call — their amount is
+ * guarded by the conditional wallet decrement instead.
+ */
+model LedgerEntry {
+  id             String   @id @default(cuid())
+  walletId       String
+  type           String
+  /// Signed micro-USD: credit/refund positive, reserve/charge negative.
+  amountMicroUsd Int
+  /// Set for reserve/charge/refund; null on plain top-up credits.
+  campaignId     String?
+  /// Unique idempotency key (see model comment).
+  eventId        String   @unique
+  createdAt      DateTime @default(now())
+
+  wallet Wallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
+
+  @@index([walletId, createdAt])
+  @@index([campaignId, createdAt])
+}
+
+/**
+ * One advertiser campaign. A campaign has exactly ONE billing model:
+ *
+ *   billingModel (app-layer validated, lowercase):
+ *     "cpc"  bidMicroUsd is the price of ONE click. Serving holds a
+ *            BudgetReservation for one bid; a valid click within 30 minutes
+ *            finalises it (charge), otherwise it expires (budget recovers).
+ *     "cpm"  bidMicroUsd is the price of 1000 views. One view costs
+ *            bidMicroUsd / 1000 (integer — whole-cent bids divide cleanly);
+ *            every served view is charged immediately (Phase 1 has no
+ *            viewability measurement, so the serve IS the confirmed view).
+ *
+ *   format: "text" | "banner" — selects the Creative shape (title/body vs
+ *   imageUrl) and the rendering in <AdSlot/>.
+ *
+ *   status (app-layer validated, lowercase):
+ *     "draft" | "pending" | "active" | "paused" | "completed"
+ *   Only "active" campaigns with deletedAt = null enter the auction.
+ *
+ * Budget semantics — a campaign has no mutable "balance" column. Its
+ * spendable budget is always derived from the ledger:
+ *
+ *   committed = Σ|reserve| − Σrefund      (money moved wallet → campaign)
+ *   spent     = Σ|charge|                 (money spent on clicks/views)
+ *   held      = Σ held BudgetReservations (in-flight, awaiting click/expiry)
+ *   remaining = committed − spent − held
+ *
+ * totalBudgetMicroUsd records the current total allocation (it grows with
+ * "add funds"); dailyBudgetMicroUsd is a per-UTC-day spend cap where
+ * 0 = no daily cap. deletedAt is the soft delete: deleted campaigns never
+ * serve again and their unspent budget is refunded to the wallet (ledger
+ * type refund) at deletion time.
+ */
+model Campaign {
+  id                  String    @id @default(cuid())
+  advertiserId        String
+  /// Internal/administrative name shown in the dashboard (1–80 chars).
+  name                String
+  /// "text" | "banner"
+  format              String    @default("text")
+  /// "cpc" | "cpm" — exactly one per campaign
+  billingModel        String    @default("cpc")
+  /// CPC: price of one click. CPM: price of 1000 views. Integer micro-USD.
+  bidMicroUsd         Int
+  /// Per-UTC-day spend cap. 0 = no daily cap.
+  dailyBudgetMicroUsd Int       @default(0)
+  /// Current total allocation reserved from the wallet at create/fund time.
+  totalBudgetMicroUsd Int
+  /// "draft" | "pending" | "active" | "paused" | "completed"
+  status              String    @default("active")
+  /// Soft delete — set together with status "completed"; the unspent
+  /// budget is refunded to the wallet in the same transaction.
+  deletedAt           DateTime?
+  /// Comma-separated target section slugs; empty = every section.
+  targetSections      String    @default("")
+  /// Comma-separated target locale codes; empty = every language.
+  targetLocales       String    @default("")
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  advertiser   User                @relation(fields: [advertiserId], references: [id], onDelete: Cascade)
+  creatives    Creative[]
+  reservations BudgetReservation[]
+
+  @@index([status, deletedAt])
   @@index([advertiserId, createdAt])
 }
 
 /**
- * Ledger row per billed event. type: "view" (ad served into a slot — the
- * billable event that decrements the campaign balance) | "click" (the
- * visitor followed the call-to-action — never billed twice for the same
- * impression).
+ * The ad content of a campaign. Versioned: every content edit appends a NEW
+ * row (version = previous + 1) — creative history is append-only, the
+ * auction always serves the latest APPROVED version.
+ *
+ *   format "text"   → title + body are the card copy (imageUrl stays null)
+ *   format "banner" → imageUrl is the creative (title/body stay null)
+ *
+ * targetUrl is the https destination every click opens.
+ *
+ * moderationStatus: "pending" | "approved" | "rejected" (app-layer validated).
+ * Phase 1 auto-approves at creation — the moderation queue itself is a later
+ * phase; the field exists so that flow can be added without a migration.
  */
-model AdImpression {
-  id         String   @id @default(cuid())
+model Creative {
+  id        String   @id @default(cuid())
   campaignId String
-  type       String
-  createdAt  DateTime @default(now())
+  /// Text format: card headline (≤ 80 chars). Banner format: null.
+  title     String?
+  /// Text format: card body copy (≤ 200 chars). Banner format: null.
+  body      String?
+  /// Banner format: https image URL. Text format: null.
+  imageUrl  String?
+  /// https destination opened on click (both formats).
+  targetUrl String
+  /// Monotonic per campaign — 1 on create, +1 per content edit.
+  version   Int      @default(1)
+  /// "pending" | "approved" | "rejected"
+  moderationStatus String @default("approved")
+  createdAt DateTime @default(now())
 
-  campaign AdCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
 
-  @@index([campaignId, type, createdAt])
-  @@index([createdAt])
+  @@index([campaignId, version])
+}
+
+/**
+ * In-flight budget hold for ONE billable event.
+ *
+ *   CPC:  created HELD for one bid when the ad is served; the visitor's
+ *         click within 30 minutes finalises it (charge + ledger entry);
+ *         after 30 minutes it EXPIRES and the campaign budget recovers.
+ *   CPM:  created FINALISED at serve time for bid/1000 — Phase 1 counts the
+ *         served impression as the confirmed view (viewability measurement
+ *         is explicitly out of scope for Phase 1); expiresAt is kept for
+ *         record-keeping only.
+ *
+ * status: "held" | "finalized" | "expired" (app-layer validated). Rows are
+ * immutable once finalised/expired; the sweeper (expireStaleReservations)
+ * flips overdue HELD rows to EXPIRED — a single conditional updateMany, so
+ * it is safe to call from every serve/click/dashboard read.
+ */
+model BudgetReservation {
+  id             String   @id @default(cuid())
+  campaignId     String
+  /// Micro-USD held for this event: CPC = the full bid; CPM = bid/1000.
+  amountMicroUsd Int
+  /// "held" | "finalized" | "expired"
+  status         String
+  /// When an unclicked CPC hold releases the budget back to the campaign.
+  expiresAt      DateTime
+  createdAt      DateTime  @default(now())
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@index([campaignId, status])
+  @@index([status, expiresAt])
 }
 
 /**
@@ -491,8 +662,6 @@ model AdImpression {
 model CryptoTopUp {
   id             String    @id @default(cuid())
   advertiserId   String
-  /// Target campaign for the credit (null → advertiser's newest campaign)
-  campaignId     String?
   walletAddress  String
   /// Expected amount in US cents
   amountExpected Int
@@ -517,8 +686,7 @@ model CryptoTopUp {
   createdAt      DateTime  @default(now())
   confirmedAt    DateTime?
 
-  advertiser User        @relation(fields: [advertiserId], references: [id], onDelete: Cascade)
-  campaign   AdCampaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  advertiser User @relation(fields: [advertiserId], references: [id], onDelete: Cascade)
 
   @@index([advertiserId, status])
   @@index([status, createdAt])

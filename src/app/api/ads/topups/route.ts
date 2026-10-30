@@ -40,8 +40,9 @@ const createSchema = z.object({
 /**
  * POST /api/ads/topups — start a crypto top-up of the AD WALLET: mints a
  * pending intention for the advertiser and returns the deposit address.
- * No campaign is needed — the money lands in User.adBalance once confirmed
- * and campaign budgets are allocated from it later.
+ * No campaign is needed — the money lands in the unified ad wallet
+ * (Wallet.availableMicroUsd + a CREDIT ledger row) once confirmed and
+ * campaign budgets are reserved from it later.
  *
  * blockbee mode: the address is issued by the BlockBee processor
  * (GET /{coin}/create/) — hosted, AML-screened, single-intention (the

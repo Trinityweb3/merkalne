@@ -58,8 +58,22 @@ export function rateLimit(key: string, limit: number, windowMs: number): RateLim
   return { ok: true, remaining: limit - bucket.hits.length, retryAfterSeconds: 0 }
 }
 
-/** Extract a best-effort client IP from proxy headers. */
+/**
+ * Extract a best-effort client IP from proxy headers.
+ *
+ * Priority order — CRITICAL behind Cloudflare + a local reverse proxy:
+ *   1. CF-Connecting-IP — Cloudflare's dedicated header carrying the TRUE
+ *      visitor IP. Must be read FIRST: the local proxy (Caddy) overwrites
+ *      X-Forwarded-For with its immediate peer, which behind Cloudflare is a
+ *      CF EDGE IP — every visitor would then share a handful of
+ *      fingerprints/rate buckets.
+ *   2. X-Forwarded-For — first (leftmost, original client) entry.
+ *   3. X-Real-IP — classic single-hop proxy header.
+ * Used for rate limiting and the anonymous stats fingerprint — never stored.
+ */
 export function clientIp(req: Request): string {
+  const cf = req.headers.get('cf-connecting-ip')
+  if (cf && cf.trim()) return cf.trim()
   const fwd = req.headers.get('x-forwarded-for')
   if (fwd) return fwd.split(',')[0].trim()
   return req.headers.get('x-real-ip') ?? 'unknown'

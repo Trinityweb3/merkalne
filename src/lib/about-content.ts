@@ -1,86 +1,19 @@
 /**
- * ABOUT PAGE CONTENT — THE ONE FILE YOU EDIT.
+ * ABOUT PAGE STATIC CONTENT.
  *
- * Everything below renders on /about: the team cards, the monthly recap
- * videos and the investor pitch deck. No code changes are needed to update
- * any of it — edit the arrays/objects and redeploy.
+ * The monthly recap videos and the investor pitch deck are configured here —
+ * no code changes are needed to update them, just edit and redeploy.
  *
- * The daily STATISTICS block in between is different: it is computed
- * automatically (see src/lib/stats/*) and is NOT configured here.
+ * Everything else on /about is dynamic:
+ *   • the daily STATISTICS block is computed automatically (src/lib/stats/*)
+ *   • the TEAM section lives in the TeamMember table and is managed
+ *     end-to-end through the Telegram admin bot (src/lib/team.ts)
  *
  * i18n: every static LABEL on /about lives in the dictionaries
- * (src/i18n/messages/*.ts, namespace `about`) — team role labels, pillar
- * texts, section headers. This file carries only the DATA (names, links,
- * video ids). Team social links come from the environment
- * (SOCIAL_VAZIMA_URL / SOCIAL_TRINITY_URL / SOCIAL_GROBOFHIK_URL) so they
- * can be changed without a rebuild.
+ * (src/i18n/messages/*.ts, namespace `about`) — pillar texts, section
+ * headers, placeholders. This file carries only the DATA (video ids, links).
  */
-import { env } from './env'
-import type { TeamMemberKey } from './site-settings'
-
-// ---------------------------------------------------------------------------
-// Team
-// ---------------------------------------------------------------------------
-
-/** Keys of the `about` dictionary namespace used for role labels. */
-export type TeamRoleKey = 'roleCeo' | 'roleProgrammer'
-
-export interface TeamMember {
-  /** Display name. */
-  name: string
-  /**
-   * SiteSetting key for the Telegram-bot-managed overrides of this member
-   * (team_<key>_bio / team_<key>_avatar) — see src/lib/site-settings.ts.
-   */
-  settingKey: TeamMemberKey
-  /**
-   * Role label — an i18n key (namespace `about`), so the role renders in the
-   * visitor's language. Add new roles to every dictionary file first.
-   */
-  roleKey: TeamRoleKey
-  /**
-   * Two–four sentences. Shown verbatim on the card. Empty/omitted → the
-   * localized "Bio coming soon." placeholder (about.bioPlaceholder).
-   */
-  bio?: string
-  /**
-   * Optional photo/avatar URL (any public image). When omitted the card
-   * renders a generated initials avatar — no placeholder assets needed.
-   */
-  imageUrl?: string
-  /**
-   * Public profile link. When set the whole card becomes a clickable link
-   * that opens in a new tab. Sourced from the environment per member.
-   */
-  socialUrl?: string
-}
-
-/**
- * The Merklane team. Social links come from env (see the header comment);
- * avatars and bios are placeholders by default — the operator overrides
- * both at runtime through the Telegram admin bot (Manage team), which
- * writes SiteSetting rows the /about page merges over these defaults.
- */
-export const TEAM_MEMBERS: TeamMember[] = [
-  {
-    name: 'Vazima',
-    settingKey: 'vazima',
-    roleKey: 'roleCeo',
-    socialUrl: env.SOCIAL_VAZIMA_URL,
-  },
-  {
-    name: 'Trinity',
-    settingKey: 'trinity',
-    roleKey: 'roleProgrammer',
-    socialUrl: env.SOCIAL_TRINITY_URL,
-  },
-  {
-    name: 'Grobofhik',
-    settingKey: 'grobofhik',
-    roleKey: 'roleProgrammer',
-    socialUrl: env.SOCIAL_GROBOFHIK_URL,
-  },
-]
+export { getTeamMembers, type TeamMemberRow } from './team'
 
 // ---------------------------------------------------------------------------
 // Monthly recap videos (embedded on /about once published)

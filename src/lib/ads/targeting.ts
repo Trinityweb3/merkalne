@@ -1,7 +1,7 @@
 /**
  * Merklane Ads — campaign targeting helpers.
  *
- * Targeting is stored as normalised comma-separated strings on AdCampaign
+ * Targeting is stored as normalised comma-separated strings on Campaign
  * (portable CSV instead of scalar lists — see the modelling rules at the
  * top of prisma/schema.prisma):
  *

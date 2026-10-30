@@ -2,23 +2,35 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslations } from 'next-intl'
-import { Megaphone, PencilLine, Plus, Target, Wallet, X } from 'lucide-react'
+import { Megaphone, PencilLine, Plus, Target, Trash2, Wallet, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { api } from '@/lib/api-client'
 import { LANGUAGES, POST_SECTIONS, SECTION_META } from '@/lib/constants'
+import {
+  BID_BOUNDS,
+  DAILY_BUDGET_BOUNDS,
+  type AdFormat,
+  type BillingModel,
+  budgetEventEstimate,
+  centsToMicro,
+  formatMicroUsd,
+  minTotalBudgetCents,
+} from '@/lib/ads/money'
 
 /**
  * Advertiser dashboard — the "Merklane ADS" tab of the profile cabinet.
  *
- * Two sub-sections (the UX fix: money and campaigns are never mixed):
- *   Wallet    deposit with crypto (BlockBee), watch the balance and the
- *             deposit history. No campaign controls live here.
- *   Campaigns the campaign list + "Create campaign". Creation asks for the
- *             bid, the TARGETING (sections / languages) and an initial
- *             budget which is validated against — and drawn from — the
- *             wallet. "Add funds" moves more wallet money into a campaign.
+ * Two sub-sections (money and campaigns are never mixed):
+ *   Wallet    deposit with crypto (BlockBee) into the unified wallet, watch
+ *             the available/reserved split, the deposit history and the
+ *             immutable ledger (credit / reserve / charge / refund).
+ *   Campaigns the campaign list + "Create campaign". FORMAT (text/banner)
+ *             and BILLING MODEL (CPC/CPM) are chosen INDEPENDENTLY; the bid
+ *             is always shown in its model's unit ("$0.50 per click" /
+ *             "$2.00 per 1000 views"). Every campaign's budget is reserved
+ *             from the wallet at creation / "add funds" time.
  *
  * Flow: fund the wallet first, then create campaigns. A fresh advertiser
  * (no campaigns yet) lands on the Wallet tab; once campaigns exist the
@@ -31,18 +43,36 @@ import { LANGUAGES, POST_SECTIONS, SECTION_META } from '@/lib/constants'
 
 interface Campaign {
   id: string
-  title: string
-  body: string
-  ctaUrl: string
-  ctaLabel: string | null
-  balance: number
-  bidPerView: number
-  status: 'active' | 'paused' | 'ended' | string
+  name: string
+  format: 'text' | 'banner'
+  billingModel: 'cpc' | 'cpm'
+  bidMicroUsd: number
+  dailyBudgetMicroUsd: number
+  totalBudgetMicroUsd: number
+  status: 'active' | 'paused' | 'completed' | 'draft' | 'pending' | string
+  deletedAt: string | null
   createdAt: string
-  impressions: number
-  clicks: number
   targetSections: string[]
   targetLocales: string[]
+  creative: { title: string | null; body: string | null; imageUrl: string | null; targetUrl: string; version: number } | null
+  budget: {
+    committedMicroUsd: number
+    spentMicroUsd: number
+    heldMicroUsd: number
+    remainingMicroUsd: number
+    spentTodayMicroUsd: number
+  }
+  stats: { served: number; views: number; clicks: number; held: number }
+}
+
+interface LedgerRow {
+  id: string
+  type: 'credit' | 'reserve' | 'charge' | 'refund' | string
+  amountMicroUsd: number
+  campaignId: string | null
+  campaignName: string | null
+  eventId: string
+  createdAt: string
 }
 
 interface TopUpRow {
@@ -58,9 +88,10 @@ interface TopUpRow {
 }
 
 interface WalletData {
-  balanceCents: number
-  inCampaignsCents: number
+  availableMicroUsd: number
+  reservedMicroUsd: number
   pendingCents: number
+  ledger: LedgerRow[]
   topUps: TopUpRow[]
   topUp: { mode: string; coins: string[]; minCents: number; maxCents: number }
 }
@@ -76,16 +107,24 @@ interface ActiveDeposit {
   mode: string
 }
 
-const BID_CHOICES = [1, 2, 3, 5, 10] // US cents per view
-const BUDGET_CHOICES = [100, 500, 1000, 2500] // US cents initial budget
+const CPC_BID_CHOICES = [10, 25, 50, 100] // US cents per click
+const CPM_BID_CHOICES = [50, 100, 200, 500] // US cents per 1000 views
+const BUDGET_CHOICES = [100, 500, 1000, 2500] // US cents total budget
+const DAILY_CHOICES = [0, 100, 500, 1000] // US cents per day (0 = no cap)
 
-/** Minimum initial budget at a bid (mirrors src/lib/ads/wallet.ts). */
-function minBudgetCents(bid: number): number {
-  return Math.max(100, Math.max(1, bid) * 50)
+function money(micro: number): string {
+  return formatMicroUsd(micro)
 }
 
-function money(cents: number): string {
+function centsMoney(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`
+}
+
+/** "0.50" → 50 (cents). Returns NaN for garbage. */
+function dollarsToCents(input: string): number {
+  const value = Number.parseFloat(input)
+  if (!Number.isFinite(value) || value < 0) return Number.NaN
+  return Math.round(value * 100)
 }
 
 function hostOf(url: string): string {
@@ -178,13 +217,18 @@ export function AdsDashboard() {
     setCoin((prev) => (prev && wallet.topUp.coins.includes(prev) ? prev : (wallet.topUp.coins[0] ?? prev)))
   }, [wallet])
 
-  // Campaign create/edit form
+  // Campaign create/edit form — FORMAT and BILLING MODEL are independent.
   const [formOpen, setFormOpen] = useState<null | { mode: 'create' } | { mode: 'edit'; campaign: Campaign }>(null)
-  const [fTitle, setFTitle] = useState('')
-  const [fBody, setFBody] = useState('')
-  const [fUrl, setFUrl] = useState('')
-  const [fBid, setFBid] = useState(1)
+  const [fName, setFName] = useState('')
+  const [fFormat, setFFormat] = useState<AdFormat>('text')
+  const [fBilling, setFBilling] = useState<BillingModel>('cpc')
+  const [fBid, setFBid] = useState('0.50')
   const [fBudget, setFBudget] = useState('5')
+  const [fDaily, setFDaily] = useState('0')
+  const [fUrl, setFUrl] = useState('')
+  const [fHeadline, setFHeadline] = useState('')
+  const [fBody, setFBody] = useState('')
+  const [fImage, setFImage] = useState('')
   const [fSections, setFSections] = useState<string[]>([])
   const [fLocales, setFLocales] = useState<string[]>([])
   const [formBusy, setFormBusy] = useState(false)
@@ -195,6 +239,10 @@ export function AdsDashboard() {
   const [fundAmount, setFundAmount] = useState('5')
   const [fundBusy, setFundBusy] = useState(false)
   const [fundError, setFundError] = useState<string | null>(null)
+
+  // Delete confirmation
+  const [deleteFor, setDeleteFor] = useState<Campaign | null>(null)
+  const [deleteBusy, setDeleteBusy] = useState(false)
 
   // ------------------------------------------------------------- deposit io
   useEffect(() => {
@@ -257,11 +305,16 @@ export function AdsDashboard() {
 
   // ------------------------------------------------------------ campaign io
   function openCreate() {
-    setFTitle('')
-    setFBody('')
-    setFUrl('')
-    setFBid(1)
+    setFName('')
+    setFFormat('text')
+    setFBilling('cpc')
+    setFBid('0.50')
     setFBudget('5')
+    setFDaily('0')
+    setFUrl('')
+    setFHeadline('')
+    setFBody('')
+    setFImage('')
     setFSections([])
     setFLocales([])
     setFormError(null)
@@ -269,11 +322,15 @@ export function AdsDashboard() {
   }
 
   function openEdit(c: Campaign) {
-    setFTitle(c.title)
-    setFBody(c.body)
-    setFUrl(c.ctaUrl)
-    setFBid(c.bidPerView)
-    setFBudget(String((c.balance / 100).toFixed(2)))
+    setFName(c.name)
+    setFFormat(c.format)
+    setFBilling(c.billingModel)
+    setFBid((c.bidMicroUsd / 1_000_000).toFixed(2))
+    setFDaily(c.dailyBudgetMicroUsd > 0 ? (c.dailyBudgetMicroUsd / 1_000_000).toFixed(2) : '0')
+    setFUrl(c.creative?.targetUrl ?? '')
+    setFHeadline(c.creative?.title ?? '')
+    setFBody(c.creative?.body ?? '')
+    setFImage(c.creative?.imageUrl ?? '')
     setFSections(c.targetSections)
     setFLocales(c.targetLocales)
     setFormError(null)
@@ -285,17 +342,42 @@ export function AdsDashboard() {
     if (!formOpen) return
     setFormError(null)
 
-    const budgetCents = Math.round(Number.parseFloat(fBudget) * 100)
+    const bidCents = dollarsToCents(fBid)
+    const budgetCents = dollarsToCents(fBudget)
+    const dailyCents = dollarsToCents(fDaily || '0')
+
+    // Shared validation — the server re-checks everything; these guards
+    // just keep the modal honest before the round-trip.
+    if (Number.isNaN(bidCents)) return setFormError(t('errorGeneric'))
+    const bounds = BID_BOUNDS[fBilling]
+    if (bidCents < bounds.minCents || bidCents > bounds.maxCents) {
+      return setFormError(fBilling === 'cpc' ? t('bidCpcBounds') : t('bidCpmBounds'))
+    }
+    if (fFormat === 'text' && (fHeadline.trim().length < 3 || fBody.trim().length < 3)) {
+      return setFormError(t('errorGeneric'))
+    }
+    if (fFormat === 'banner' && !/^https:\/\//.test(fImage.trim())) {
+      return setFormError(t('fieldImage'))
+    }
+    if (!/^https:\/\//.test(fUrl.trim())) return setFormError(t('errorGeneric'))
+
     if (formOpen.mode === 'create') {
-      const min = minBudgetCents(fBid)
-      if (!Number.isFinite(budgetCents) || budgetCents < min) {
-        setFormError(t('budgetMinHint', { min: money(min) }))
-        return
+      if (Number.isNaN(budgetCents)) return setFormError(t('errorGeneric'))
+      const min = minTotalBudgetCents(fBilling, bidCents)
+      if (budgetCents < min) {
+        return setFormError(t('budgetMinHint', { min: money(centsToMicro(min)) }))
       }
-      if (wallet && budgetCents > wallet.balanceCents) {
-        setFormError(t('insufficientWallet'))
-        return
+      if (dailyCents !== 0 && dailyCents < DAILY_BUDGET_BOUNDS.minCents) {
+        return setFormError(t('dailyBudgetHint'))
       }
+      if (dailyCents !== 0 && dailyCents > budgetCents) {
+        return setFormError(t('dailyBudgetHint'))
+      }
+      if (wallet && centsToMicro(budgetCents) > wallet.availableMicroUsd) {
+        return setFormError(t('insufficientWallet'))
+      }
+    } else if (dailyCents !== 0 && dailyCents < DAILY_BUDGET_BOUNDS.minCents) {
+      return setFormError(t('dailyBudgetHint'))
     }
 
     setFormBusy(true)
@@ -304,11 +386,14 @@ export function AdsDashboard() {
         await api('/api/ads/campaigns', {
           method: 'POST',
           body: {
-            title: fTitle,
-            body: fBody,
-            ctaUrl: fUrl,
-            bidPerView: fBid,
+            name: fName,
+            format: fFormat,
+            billingModel: fBilling,
+            bidCents,
             budgetCents,
+            dailyBudgetCents: dailyCents,
+            targetUrl: fUrl.trim(),
+            ...(fFormat === 'text' ? { headline: fHeadline.trim(), body: fBody.trim() } : { imageUrl: fImage.trim() }),
             targetSections: fSections,
             targetLocales: fLocales,
           },
@@ -318,10 +403,11 @@ export function AdsDashboard() {
           method: 'PATCH',
           body: {
             action: 'update',
-            title: fTitle,
-            body: fBody,
-            ctaUrl: fUrl,
-            bidPerView: fBid,
+            name: fName,
+            bidCents,
+            dailyBudgetCents: dailyCents,
+            targetUrl: fUrl.trim(),
+            ...(fFormat === 'text' ? { headline: fHeadline.trim(), body: fBody.trim() } : { imageUrl: fImage.trim() }),
             targetSections: fSections,
             targetLocales: fLocales,
           },
@@ -359,12 +445,12 @@ export function AdsDashboard() {
     e.preventDefault()
     if (!fundFor) return
     setFundError(null)
-    const cents = Math.round(Number.parseFloat(fundAmount) * 100)
-    if (!Number.isFinite(cents) || cents < 100) {
+    const cents = dollarsToCents(fundAmount)
+    if (Number.isNaN(cents) || cents < 100) {
       setFundError(t('fundMinHint'))
       return
     }
-    if (wallet && cents > wallet.balanceCents) {
+    if (wallet && centsToMicro(cents) > wallet.availableMicroUsd) {
       setFundError(t('insufficientWallet'))
       return
     }
@@ -383,8 +469,26 @@ export function AdsDashboard() {
     }
   }
 
+  async function confirmDelete() {
+    if (!deleteFor) return
+    setDeleteBusy(true)
+    setError(null)
+    try {
+      await api(`/api/ads/campaigns/${deleteFor.id}`, {
+        method: 'PATCH',
+        body: { action: 'delete' },
+      })
+      setDeleteFor(null)
+      await refresh()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('errorGeneric'))
+    } finally {
+      setDeleteBusy(false)
+    }
+  }
+
   // ------------------------------------------------------------------ render
-  const walletCents = wallet?.balanceCents ?? 0
+  const availableMicro = wallet?.availableMicroUsd ?? 0
 
   return (
     <div>
@@ -435,16 +539,17 @@ export function AdsDashboard() {
         <CampaignsView
           campaigns={campaigns}
           loaded={loaded}
-          walletCents={walletCents}
+          availableMicro={availableMicro}
           onCreate={openCreate}
           onEdit={openEdit}
           onFund={openFund}
           onToggle={toggleCampaign}
+          onDelete={setDeleteFor}
         />
       )}
 
       {/* ---------------------------------------------------------------- */}
-      {/* Deposit modal (BlockBee / manual)                                */}
+      {/* Deposit modal (BlockBee / manual) — credits the unified wallet    */}
       {/* ---------------------------------------------------------------- */}
       {depositOpen ? (
         <div
@@ -464,7 +569,7 @@ export function AdsDashboard() {
               </button>
             </div>
             <p className="muted small" style={{ marginTop: 4 }}>
-              {t('walletBalanceLabel')}: <strong>{money(walletCents)}</strong>
+              {t('walletBalanceLabel')}: <strong>{money(availableMicro)}</strong>
             </p>
 
             {!activeDeposit ? (
@@ -542,7 +647,7 @@ export function AdsDashboard() {
                   </div>
                 </div>
                 <p className="muted small" style={{ marginTop: 12 }}>
-                  {t('topUpExpected')} <strong>{money(activeDeposit.amountExpectedCents)}</strong>
+                  {t('topUpExpected')} <strong>{centsMoney(activeDeposit.amountExpectedCents)}</strong>
                   {activeDeposit.provider === 'blockbee' && activeDeposit.coin ? ` · ${coinLabel(activeDeposit.coin)}` : ''}
                 </p>
                 <p
@@ -565,7 +670,8 @@ export function AdsDashboard() {
       ) : null}
 
       {/* ---------------------------------------------------------------- */}
-      {/* Create / Edit campaign modal (bid + budget + TARGETING)          */}
+      {/* Create / Edit campaign modal — format & billing are independent;  */}
+      {/* the bid is shown in the model's own unit                          */}
       {/* ---------------------------------------------------------------- */}
       {formOpen ? (
         <div
@@ -587,20 +693,147 @@ export function AdsDashboard() {
 
             <form onSubmit={submitForm} style={{ marginTop: 14 }}>
               <div className="form-grid">
-                <div className="field">
-                  <label className="field-label" htmlFor="ad-title">
-                    {t('fieldTitle')}
+                <div className="field span-2">
+                  <label className="field-label" htmlFor="ad-name">
+                    {t('fieldCampaignName')}
                   </label>
                   <Input
-                    id="ad-title"
-                    value={fTitle}
-                    onChange={(e) => setFTitle(e.target.value)}
-                    placeholder={t('fieldTitlePh')}
+                    id="ad-name"
+                    value={fName}
+                    onChange={(e) => setFName(e.target.value)}
+                    placeholder={t('fieldCampaignNamePh')}
                     maxLength={80}
                     required
                   />
                 </div>
-                <div className="field">
+
+                {/* Format — independent of the billing model */}
+                <div className="field span-2">
+                  <label className="field-label">{t('formatLabel')}</label>
+                  <div className="row wrap" style={{ gap: 8 }}>
+                    <button
+                      type="button"
+                      className={`chip ${fFormat === 'text' ? 'selected' : ''}`}
+                      aria-pressed={fFormat === 'text'}
+                      onClick={() => setFFormat('text')}
+                    >
+                      {t('formatText')}
+                    </button>
+                    <button
+                      type="button"
+                      className={`chip ${fFormat === 'banner' ? 'selected' : ''}`}
+                      aria-pressed={fFormat === 'banner'}
+                      onClick={() => setFFormat('banner')}
+                    >
+                      {t('formatBanner')}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Billing model — independent of the format */}
+                <div className="field span-2">
+                  <label className="field-label">{t('billingLabel')}</label>
+                  <div className="row wrap" style={{ gap: 8 }}>
+                    <button
+                      type="button"
+                      className={`chip ${fBilling === 'cpc' ? 'selected' : ''}`}
+                      aria-pressed={fBilling === 'cpc'}
+                      onClick={() => setFBilling('cpc')}
+                    >
+                      {t('billingCpc')}
+                    </button>
+                    <button
+                      type="button"
+                      className={`chip ${fBilling === 'cpm' ? 'selected' : ''}`}
+                      aria-pressed={fBilling === 'cpm'}
+                      onClick={() => setFBilling('cpm')}
+                    >
+                      {t('billingCpm')}
+                    </button>
+                  </div>
+                  <small className="muted">{t('bidHint')}</small>
+                </div>
+
+                {/* Bid — in the model's unit ($/click or $/1000 views) */}
+                <div className="field span-2">
+                  <label className="field-label" htmlFor="ad-bid">
+                    {t('fieldBid')} ({fBilling === 'cpc' ? t('bidSuffixCpc') : t('bidSuffixCpm')})
+                  </label>
+                  <div className="row wrap" style={{ gap: 8 }}>
+                    {(fBilling === 'cpc' ? CPC_BID_CHOICES : CPM_BID_CHOICES).map((cents) => (
+                      <button
+                        type="button"
+                        key={cents}
+                        className={`chip ${dollarsToCents(fBid) === cents ? 'selected' : ''}`}
+                        aria-pressed={dollarsToCents(fBid) === cents}
+                        onClick={() => setFBid((cents / 100).toFixed(2))}
+                      >
+                        {centsMoney(cents)}
+                      </button>
+                    ))}
+                  </div>
+                  <Input
+                    id="ad-bid"
+                    type="number"
+                    min={fBilling === 'cpc' ? BID_BOUNDS.cpc.minCents / 100 : BID_BOUNDS.cpm.minCents / 100}
+                    max={fBilling === 'cpc' ? BID_BOUNDS.cpc.maxCents / 100 : BID_BOUNDS.cpm.maxCents / 100}
+                    step={0.01}
+                    value={fBid}
+                    onChange={(e) => setFBid(e.target.value)}
+                    required
+                    style={{ marginTop: 8 }}
+                  />
+                  <small className="muted">{fBilling === 'cpc' ? t('bidCpcBounds') : t('bidCpmBounds')}</small>
+                </div>
+
+                {/* Creative fields follow the chosen format */}
+                {fFormat === 'text' ? (
+                  <>
+                    <div className="field span-2">
+                      <label className="field-label" htmlFor="ad-headline">
+                        {t('fieldTitle')}
+                      </label>
+                      <Input
+                        id="ad-headline"
+                        value={fHeadline}
+                        onChange={(e) => setFHeadline(e.target.value)}
+                        placeholder={t('fieldTitlePh')}
+                        maxLength={80}
+                        required
+                      />
+                    </div>
+                    <div className="field span-2">
+                      <label className="field-label" htmlFor="ad-body">
+                        {t('fieldBody')}
+                      </label>
+                      <Textarea
+                        id="ad-body"
+                        value={fBody}
+                        onChange={(e) => setFBody(e.target.value)}
+                        placeholder={t('fieldBodyPh')}
+                        maxLength={200}
+                        rows={3}
+                        required
+                      />
+                    </div>
+                  </>
+                ) : (
+                  <div className="field span-2">
+                    <label className="field-label" htmlFor="ad-image">
+                      {t('fieldImage')}
+                    </label>
+                    <Input
+                      id="ad-image"
+                      type="url"
+                      value={fImage}
+                      onChange={(e) => setFImage(e.target.value)}
+                      placeholder={t('fieldImagePh')}
+                      required
+                    />
+                  </div>
+                )}
+
+                <div className="field span-2">
                   <label className="field-label" htmlFor="ad-url">
                     {t('fieldUrl')}
                   </label>
@@ -613,74 +846,110 @@ export function AdsDashboard() {
                     required
                   />
                 </div>
-                <div className="field span-2">
-                  <label className="field-label" htmlFor="ad-body">
-                    {t('fieldBody')}
-                  </label>
-                  <Textarea
-                    id="ad-body"
-                    value={fBody}
-                    onChange={(e) => setFBody(e.target.value)}
-                    placeholder={t('fieldBodyPh')}
-                    maxLength={200}
-                    rows={3}
-                    required
-                  />
-                </div>
-                <div className="field span-2">
-                  <label className="field-label">{t('fieldBid')}</label>
-                  <div className="row wrap" style={{ gap: 8 }}>
-                    {BID_CHOICES.map((cents) => (
-                      <button
-                        type="button"
-                        key={cents}
-                        className={`chip ${fBid === cents ? 'selected' : ''}`}
-                        aria-pressed={fBid === cents}
-                        onClick={() => setFBid(cents)}
-                      >
-                        {t('bidChip', { cents })}
-                      </button>
-                    ))}
-                  </div>
-                  <small className="muted">{t('bidHint')}</small>
-                </div>
 
                 {formOpen.mode === 'create' ? (
+                  <>
+                    <div className="field span-2">
+                      <label className="field-label" htmlFor="ad-budget">
+                        {t('budgetLabel')}
+                      </label>
+                      <div className="row wrap" style={{ gap: 8 }}>
+                        {BUDGET_CHOICES.map((cents) => (
+                          <button
+                            type="button"
+                            key={cents}
+                            className={`chip ${dollarsToCents(fBudget) === cents ? 'selected' : ''}`}
+                            aria-pressed={dollarsToCents(fBudget) === cents}
+                            disabled={centsToMicro(cents) > availableMicro}
+                            onClick={() => setFBudget((cents / 100).toFixed(0))}
+                          >
+                            {centsMoney(cents)}
+                          </button>
+                        ))}
+                      </div>
+                      <Input
+                        id="ad-budget"
+                        type="number"
+                        min={minTotalBudgetCents(fBilling, dollarsToCents(fBid) || 1) / 100}
+                        max={Math.max(availableMicro / 10_000, 100) / 100}
+                        step={0.5}
+                        value={fBudget}
+                        onChange={(e) => setFBudget(e.target.value)}
+                        required
+                        style={{ marginTop: 8 }}
+                      />
+                      <small className="muted">
+                        {t('budgetWalletHint', { amount: money(availableMicro) })}
+                        {' · '}
+                        {fBilling === 'cpc'
+                          ? t('estClicks', {
+                              count: budgetEventEstimate('cpc', dollarsToCents(fBudget) || 0, dollarsToCents(fBid) || 1),
+                            })
+                          : t('estViews', {
+                              count: budgetEventEstimate('cpm', dollarsToCents(fBudget) || 0, dollarsToCents(fBid) || 1),
+                            })}
+                      </small>
+                    </div>
+
+                    <div className="field span-2">
+                      <label className="field-label" htmlFor="ad-daily">
+                        {t('dailyBudgetLabel')}
+                      </label>
+                      <div className="row wrap" style={{ gap: 8 }}>
+                        {DAILY_CHOICES.map((cents) => (
+                          <button
+                            type="button"
+                            key={cents}
+                            className={`chip ${dollarsToCents(fDaily || '0') === cents ? 'selected' : ''}`}
+                            aria-pressed={dollarsToCents(fDaily || '0') === cents}
+                            onClick={() => setFDaily(cents === 0 ? '0' : (cents / 100).toFixed(2))}
+                          >
+                            {cents === 0 ? t('dailyNoCap') : centsMoney(cents)}
+                          </button>
+                        ))}
+                      </div>
+                      <Input
+                        id="ad-daily"
+                        type="number"
+                        min={0}
+                        step={0.5}
+                        value={fDaily}
+                        onChange={(e) => setFDaily(e.target.value)}
+                        style={{ marginTop: 8 }}
+                      />
+                      <small className="muted">{t('dailyBudgetHint')}</small>
+                    </div>
+                  </>
+                ) : (
                   <div className="field span-2">
-                    <label className="field-label" htmlFor="ad-budget">
-                      {t('budgetLabel')}
+                    <label className="field-label" htmlFor="ad-daily">
+                      {t('dailyBudgetLabel')}
                     </label>
                     <div className="row wrap" style={{ gap: 8 }}>
-                      {BUDGET_CHOICES.map((cents) => (
+                      {DAILY_CHOICES.map((cents) => (
                         <button
                           type="button"
                           key={cents}
-                          className={`chip ${Math.round(Number.parseFloat(fBudget) * 100) === cents ? 'selected' : ''}`}
-                          aria-pressed={Math.round(Number.parseFloat(fBudget) * 100) === cents}
-                          disabled={cents > walletCents}
-                          onClick={() => setFBudget((cents / 100).toFixed(0))}
+                          className={`chip ${dollarsToCents(fDaily || '0') === cents ? 'selected' : ''}`}
+                          aria-pressed={dollarsToCents(fDaily || '0') === cents}
+                          onClick={() => setFDaily(cents === 0 ? '0' : (cents / 100).toFixed(2))}
                         >
-                          {money(cents)}
+                          {cents === 0 ? t('dailyNoCap') : centsMoney(cents)}
                         </button>
                       ))}
                     </div>
                     <Input
-                      id="ad-budget"
+                      id="ad-daily"
                       type="number"
-                      min={minBudgetCents(fBid) / 100}
-                      max={Math.max(walletCents, minBudgetCents(fBid)) / 100}
+                      min={0}
                       step={0.5}
-                      value={fBudget}
-                      onChange={(e) => setFBudget(e.target.value)}
-                      required
+                      value={fDaily}
+                      onChange={(e) => setFDaily(e.target.value)}
                       style={{ marginTop: 8 }}
                     />
-                    <small className="muted">
-                      {t('budgetWalletHint', { amount: money(walletCents) })} ·{' '}
-                      {t('budgetViews', { count: Math.floor((Math.round(Number.parseFloat(fBudget) * 100) || 0) / fBid) })}
-                    </small>
+                    <small className="muted">{t('dailyBudgetHint')}</small>
                   </div>
-                ) : null}
+                )}
 
                 {/* ------------------------- Targeting ------------------------ */}
                 <div className="field span-2" style={{ borderTop: '1px solid var(--border)', paddingTop: 14 }}>
@@ -758,7 +1027,7 @@ export function AdsDashboard() {
       ) : null}
 
       {/* ---------------------------------------------------------------- */}
-      {/* Add funds modal (wallet → campaign budget)                       */}
+      {/* Add funds modal (wallet → campaign budget)                        */}
       {/* ---------------------------------------------------------------- */}
       {fundFor ? (
         <div
@@ -778,10 +1047,10 @@ export function AdsDashboard() {
               </button>
             </div>
             <p className="muted small" style={{ marginTop: 4 }}>
-              {fundFor.title} · {t('balance')} {money(fundFor.balance)}
+              {fundFor.name} · {t('remainingLabel')} {money(fundFor.budget.remainingMicroUsd)}
             </p>
             <p className="muted tiny" style={{ marginTop: 6 }}>
-              {t('fundNote', { amount: money(walletCents) })}
+              {t('fundNote', { amount: money(availableMicro) })}
             </p>
 
             <form onSubmit={submitFund} style={{ marginTop: 14 }}>
@@ -793,7 +1062,7 @@ export function AdsDashboard() {
                   id="ad-fund"
                   type="number"
                   min={1}
-                  max={Math.max(walletCents / 100, 1)}
+                  max={Math.max(availableMicro / 10_000, 1)}
                   step={0.5}
                   value={fundAmount}
                   onChange={(e) => setFundAmount(e.target.value)}
@@ -803,8 +1072,8 @@ export function AdsDashboard() {
                   <Button
                     type="button"
                     variant="outline"
-                    onClick={() => setFundAmount((walletCents / 100).toFixed(2))}
-                    disabled={walletCents < 100}
+                    onClick={() => setFundAmount((availableMicro / 1_000_000).toFixed(2))}
+                    disabled={availableMicro < 100 * 10_000}
                   >
                     {t('fundAll')}
                   </Button>
@@ -821,6 +1090,46 @@ export function AdsDashboard() {
                 </Button>
               </div>
             </form>
+          </div>
+        </div>
+      ) : null}
+
+      {/* ---------------------------------------------------------------- */}
+      {/* Delete confirmation — refunds the unspent budget to the wallet    */}
+      {/* ---------------------------------------------------------------- */}
+      {deleteFor ? (
+        <div
+          className="fixed inset-0 z-[60] grid place-items-center bg-black/60 p-5 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-label={t('deleteTitle')}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setDeleteFor(null)
+          }}
+        >
+          <div className="card w-full max-w-[440px] shadow-2xl">
+            <div className="row between">
+              <h3>{t('deleteTitle')}</h3>
+              <button type="button" className="icon-button" aria-label={tc('cancel')} onClick={() => setDeleteFor(null)}>
+                <X width={16} height={16} aria-hidden />
+              </button>
+            </div>
+            <p className="muted small" style={{ marginTop: 8, lineHeight: 1.7 }}>
+              {deleteFor.name}
+            </p>
+            <p className="muted small" style={{ marginTop: 8, lineHeight: 1.7 }}>
+              {t('deleteNote')}{' '}
+              {t('remainingLabel')}: <strong>{money(deleteFor.budget.remainingMicroUsd)}</strong>
+            </p>
+            <div className="button-row" style={{ marginTop: 16 }}>
+              <Button variant="outline" type="button" onClick={() => setDeleteFor(null)}>
+                {tc('cancel')}
+              </Button>
+              <Button type="button" onClick={confirmDelete} disabled={deleteBusy}>
+                <Trash2 width={15} height={15} aria-hidden />
+                {deleteBusy ? tc('loading') : t('deleteBtn')}
+              </Button>
+            </div>
           </div>
         </div>
       ) : null}
@@ -847,22 +1156,30 @@ function WalletView({
     return <p className="muted small">Loading…</p>
   }
 
+  const movementLabel = (type: string): string => {
+    if (type === 'credit') return t('ledgerCredit')
+    if (type === 'reserve') return t('ledgerReserve')
+    if (type === 'charge') return t('ledgerCharge')
+    if (type === 'refund') return t('ledgerRefund')
+    return type
+  }
+
   return (
     <div>
       <div className="stat-grid">
         <div className="stat">
           <p className="label">{t('walletBalanceLabel')}</p>
-          <p className="value">{money(wallet?.balanceCents ?? 0)}</p>
+          <p className="value">{money(wallet?.availableMicroUsd ?? 0)}</p>
           <p className="detail">{t('walletHint')}</p>
         </div>
         <div className="stat">
           <p className="label">{t('inCampaignsLabel')}</p>
-          <p className="value">{money(wallet?.inCampaignsCents ?? 0)}</p>
+          <p className="value">{money(wallet?.reservedMicroUsd ?? 0)}</p>
           <p className="detail">{t('inCampaignsDetail')}</p>
         </div>
         <div className="stat">
           <p className="label">{t('pendingLabel')}</p>
-          <p className="value">{money(wallet?.pendingCents ?? 0)}</p>
+          <p className="value">{centsMoney(wallet?.pendingCents ?? 0)}</p>
           <p className="detail">{t('pendingDetail')}</p>
         </div>
       </div>
@@ -882,7 +1199,42 @@ function WalletView({
         </div>
       </div>
 
-      {/* Transaction history */}
+      {/* Immutable ledger — the double-entry trail */}
+      <div className="section-block" style={{ marginTop: 18 }}>
+        <div className="section-title">
+          <h2>{t('ledgerTitle')}</h2>
+        </div>
+        {(wallet?.ledger.length ?? 0) === 0 ? (
+          <div className="empty-state card" style={{ textAlign: 'center' }}>
+            <h3>{t('ledgerEmpty')}</h3>
+          </div>
+        ) : (
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>{t('colDate')}</th>
+                  <th>{t('colMovement')}</th>
+                  <th>{t('colCampaign')}</th>
+                  <th>{t('colAmount')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {wallet?.ledger.map((row) => (
+                  <tr key={row.id} className="data-row">
+                    <td className="muted">{new Date(row.createdAt).toLocaleDateString()}</td>
+                    <td>{movementLabel(row.type)}</td>
+                    <td className="muted">{row.campaignName ?? '—'}</td>
+                    <td className={row.amountMicroUsd < 0 ? 'negative' : 'positive'}>{money(row.amountMicroUsd)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* Deposit history (BlockBee intentions) */}
       <div className="section-block" style={{ marginTop: 18 }}>
         <div className="section-title">
           <h2>{t('historyTitle')}</h2>
@@ -908,8 +1260,8 @@ function WalletView({
                     <td className="muted">{new Date(row.createdAt).toLocaleDateString()}</td>
                     <td>
                       {row.status === 'confirmed' && row.amountReceivedCents > 0
-                        ? money(row.amountReceivedCents)
-                        : money(row.amountExpectedCents)}
+                        ? centsMoney(row.amountReceivedCents)
+                        : centsMoney(row.amountExpectedCents)}
                     </td>
                     <td className="muted">{row.coin ? coinLabel(row.coin) : row.provider === 'blockbee' ? 'BlockBee' : '—'}</td>
                     <td>
@@ -943,19 +1295,21 @@ function WalletView({
 function CampaignsView({
   campaigns,
   loaded,
-  walletCents,
+  availableMicro,
   onCreate,
   onEdit,
   onFund,
   onToggle,
+  onDelete,
 }: {
   campaigns: Campaign[]
   loaded: boolean
-  walletCents: number
+  availableMicro: number
   onCreate: () => void
   onEdit: (c: Campaign) => void
   onFund: (c: Campaign) => void
   onToggle: (c: Campaign) => void
+  onDelete: (c: Campaign) => void
 }) {
   const t = useTranslations('ads')
   const tc = useTranslations('common')
@@ -984,12 +1338,12 @@ function CampaignsView({
             {t('noCampaignsText')}
           </p>
           <div className="button-row" style={{ justifyContent: 'center', marginTop: 16 }}>
-            <Button onClick={onCreate} disabled={walletCents < 100}>
+            <Button onClick={onCreate} disabled={availableMicro < 100 * 10_000}>
               <Plus width={15} height={15} aria-hidden />
               {t('newCampaignBtn')}
             </Button>
           </div>
-          {walletCents < 100 ? (
+          {availableMicro < 100 * 10_000 ? (
             <p className="muted tiny" style={{ marginTop: 10 }}>
               {t('insufficientWallet')}
             </p>
@@ -998,8 +1352,13 @@ function CampaignsView({
       ) : (
         <div className="grid gap-4">
           {campaigns.map((c) => {
-            const ctr = c.impressions > 0 ? (c.clicks / c.impressions) * 100 : null
-            const resumable = c.status === 'paused' && c.balance >= c.bidPerView
+            const isCpc = c.billingModel === 'cpc'
+            const ctr = isCpc && c.stats.served > 0 ? (c.stats.clicks / c.stats.served) * 100 : null
+            // Resume only makes sense while the derived budget still covers
+            // one billable event.
+            const perEvent = isCpc ? c.bidMicroUsd : Math.floor(c.bidMicroUsd / 1000)
+            const resumable = c.status === 'paused' && c.budget.remainingMicroUsd >= perEvent
+            const completed = c.status === 'completed' || c.deletedAt !== null
             const targets = [
               c.targetSections.length > 0
                 ? `${c.targetSections.length}/${SECTION_OPTIONS.length} ${t('targetSectionsLabel')}`
@@ -1011,7 +1370,7 @@ function CampaignsView({
             return (
               <div className="card ads-campaign" key={c.id}>
                 <div className="row between wrap" style={{ gap: 10 }}>
-                  <strong className="text-[1.05rem] tracking-tight">{c.title}</strong>
+                  <strong className="text-[1.05rem] tracking-tight">{c.name}</strong>
                   <span
                     className={`badge ${
                       c.status === 'active'
@@ -1021,47 +1380,71 @@ function CampaignsView({
                           : 'state-under-review'
                     }`}
                   >
-                    {c.status === 'active' ? t('statusActive') : c.status === 'paused' ? t('statusPaused') : t('statusEnded')}
+                    {c.status === 'active'
+                      ? t('statusActive')
+                      : c.status === 'paused'
+                        ? t('statusPaused')
+                        : t('statusCompleted')}
                   </span>
                 </div>
                 <p className="muted small" style={{ marginTop: 6 }}>
-                  {c.body}
+                  {c.creative?.title ?? c.creative?.imageUrl ?? '—'}
                 </p>
                 <p className="tiny muted" style={{ marginTop: 4, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                   <Target width={12} height={12} aria-hidden />
-                  {targets.length === 0 ? t('targetsAll') : targets.join(' · ')} · {hostOf(c.ctaUrl)} ·{' '}
-                  {t('bidPerViewLabel', { cents: c.bidPerView })}
+                  {c.format === 'text' ? t('formatText') : t('formatBanner')} · {isCpc ? t('badgeCpc') : t('badgeCpm')} ·{' '}
+                  {t(c.billingModel === 'cpc' ? 'bidLineCpc' : 'bidLineCpm', {
+                    amount: money(c.bidMicroUsd),
+                  })}
+                  {targets.length === 0 ? '' : ` · ${targets.join(' · ')}`} · {hostOf(c.creative?.targetUrl ?? '')}
                 </p>
                 <div className="stat-grid" style={{ marginTop: 14 }}>
                   <div className="stat">
-                    <p className="label">{t('balance')}</p>
-                    <p className="value">{money(c.balance)}</p>
+                    <p className="label">{t('remainingLabel')}</p>
+                    <p className="value">{money(c.budget.remainingMicroUsd)}</p>
                   </div>
                   <div className="stat">
-                    <p className="label">{t('impressions')}</p>
-                    <p className="value">{c.impressions}</p>
+                    <p className="label">{t('spentLabel')}</p>
+                    <p className="value">{money(c.budget.spentMicroUsd)}</p>
                   </div>
                   <div className="stat">
-                    <p className="label">{t('clicks')}</p>
-                    <p className="value">{c.clicks}</p>
+                    <p className="label">{isCpc ? t('servedLabel') : t('viewsLabel')}</p>
+                    <p className="value">{isCpc ? c.stats.served : c.stats.views}</p>
                   </div>
                   <div className="stat">
-                    <p className="label">{t('ctr')}</p>
-                    <p className="value">{ctr === null ? '—' : `${ctr.toFixed(1)}%`}</p>
+                    <p className="label">{isCpc ? t('clicks') : t('ctr')}</p>
+                    <p className="value">
+                      {isCpc ? c.stats.clicks : ctr === null ? '—' : `${ctr.toFixed(1)}%`}
+                    </p>
                   </div>
                 </div>
+                {c.status === 'paused' && !resumable ? (
+                  <p className="muted tiny" style={{ marginTop: 10 }}>
+                    {t('outOfBudget')}
+                  </p>
+                ) : null}
                 <div className="row wrap" style={{ marginTop: 14 }}>
-                  <Button variant="outline" onClick={() => onToggle(c)} disabled={c.status === 'ended' || (c.status === 'paused' && !resumable)}>
+                  <Button
+                    variant="outline"
+                    onClick={() => onToggle(c)}
+                    disabled={completed || (c.status === 'paused' && !resumable)}
+                  >
                     {c.status === 'active' ? t('pause') : t('resume')}
                   </Button>
-                  <Button variant="outline" onClick={() => onFund(c)} disabled={c.status === 'ended' || walletCents < 100}>
+                  <Button variant="outline" onClick={() => onFund(c)} disabled={completed || availableMicro < 100 * 10_000}>
                     <Wallet width={15} height={15} aria-hidden />
                     {t('addFundsBtn')}
                   </Button>
-                  <Button variant="outline" onClick={() => onEdit(c)} disabled={c.status === 'ended'}>
+                  <Button variant="outline" onClick={() => onEdit(c)} disabled={completed}>
                     <PencilLine width={15} height={15} aria-hidden />
                     {t('editBtn')}
                   </Button>
+                  {!completed ? (
+                    <Button variant="outline" onClick={() => onDelete(c)}>
+                      <Trash2 width={15} height={15} aria-hidden />
+                      {t('deleteBtn')}
+                    </Button>
+                  ) : null}
                 </div>
               </div>
             )
