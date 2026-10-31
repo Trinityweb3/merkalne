@@ -10,11 +10,11 @@ import { Megaphone } from 'lucide-react'
  * Fetches a winner from /api/ads/serve on mount (50/50 CPC/CPM pool split,
  * weighted-random inside the pool), passing the TARGETING CONTEXT: the
  * active interface locale (always), the content section (via the
- * `section` prop) and — new in Phase 2 — the page's keyword context and
- * hashtags (via `keywords` / `hashtags`; article pages pass the post title
- * + tags). Campaigns whose targeting excludes this context never enter
- * the draw. A 204 (ads off, nothing eligible, rate limited) renders
- * NOTHING — a sold-out auction never leaves an empty box on the page.
+ * `section` prop) and the page's keyword/hashtag context (via `keywords` /
+ * `hashtags`; article pages pass the post title + tags). Campaigns whose
+ * targeting excludes this context never enter the draw. A 204 (ads off,
+ * nothing eligible, rate limited) renders NOTHING — a sold-out auction
+ * never leaves an empty box on the page.
  *
  * FORMAT (independent of billing):
  *   text   → headline + body + display domain + CTA button
@@ -25,14 +25,37 @@ import { Megaphone } from 'lucide-react'
  * "Sponsored" badge, a gold tinted border and rel="sponsored" so it can
  * never be mistaken for editorial.
  *
- * The click beacon echoes the reservationId — for a CPC campaign it
- * finalises the held budget reservation (the only billing event); CPM
- * campaigns were charged at serve time, so their beacon is a no-op.
+ * ── Phase 3 event pipeline ────────────────────────────────────────────
+ *
+ * CLICKS: the card's href no longer opens the destination directly — it
+ * goes through the SECURE REDIRECT ROUTE /api/ads/click/[token], carrying
+ * the serve's HMAC token. That route validates the signature, logs the
+ * valid_click event, charges the CPC campaign (a held BudgetReservation
+ * is finalised — the only CPC billing event) and 302-redirects to the
+ * advertiser's https destination. CPM clicks are logged but never charged
+ * (CPM bills views); duplicate clicks are settled server-side to a single
+ * charge, so no client-side dedup state is needed here.
+ *
+ * VIEWABILITY: this component measures when the ad becomes VIEWABLE —
+ * at least 50 % of its area inside the viewport (IntersectionObserver) for
+ * ONE CONTINUOUS second (a local timer) while the tab is ACTIVE (Page
+ * Visibility API). Only then does it beacon POST /api/ads/event with the
+ * same signed token; the server re-verifies the HMAC and, for a CPM
+ * campaign, finalises the held reservation — the only CPM billing event.
+ * Interruptions (scrolled below 50 %, tab hidden) reset the continuous
+ * second; the beacon fires at most once per served ad.
  */
+
+/** Viewability spec: ≥ 50 % of the ad visible … */
+const VIEWABLE_RATIO = 0.5
+/** … for one continuous second (ms), in an active tab. */
+const VIEWABLE_MS = 1000
 
 interface ServedAd {
   campaignId: string
   reservationId: string
+  /** HMAC token — authenticates the click redirect and the viewability beacon. */
+  clickToken: string
   format: 'text' | 'banner'
   billingModel: 'cpc' | 'cpm'
   title: string | null
@@ -92,7 +115,9 @@ export function AdSlot({
   const t = useTranslations('adSlot')
   const locale = useLocale()
   const [ad, setAd] = useState<ServedAd | null>(null)
-  const clickedRef = useRef(false)
+
+  /** The rendered card — the viewability measurement target. */
+  const cardRef = useRef<HTMLAnchorElement | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -122,28 +147,90 @@ export function AdSlot({
     // and re-trigger the auction fetch (and its budget holds) forever.
   }, [slot, locale, section, keywords?.join(','), hashtags?.join(',')])
 
+  // ── Viewability: ≥ 50 % visible for one continuous second, active tab ──
+  useEffect(() => {
+    if (!ad || !ad.clickToken) return
+    const el = cardRef.current
+    if (!el || typeof IntersectionObserver === 'undefined') return
+
+    // Effect-local state — the measurement lives exactly as long as this
+    // ad is mounted. `ratio` is the share of the card inside the viewport.
+    let ratio = 0
+    let timer: ReturnType<typeof setTimeout> | null = null
+    let fired = false
+
+    const clearTimer = () => {
+      if (timer !== null) {
+        clearTimeout(timer)
+        timer = null
+      }
+    }
+
+    // The one-shot beacon. keepalive so it survives the visitor navigating
+    // away in the same instant (the same trick the old click beacon used).
+    const fire = () => {
+      if (fired) return
+      fired = true
+      clearTimer()
+      fetch('/api/ads/event', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: ad.clickToken, type: 'viewable_impression' }),
+        keepalive: true,
+      }).catch(() => undefined)
+    }
+
+    // Start the continuous second only when BOTH conditions hold; any
+    // interruption (scrolled under 50 %, tab hidden) cancels and resets.
+    const evaluate = () => {
+      if (fired) return
+      const tabActive = document.visibilityState === 'visible'
+      if (ratio >= VIEWABLE_RATIO && tabActive) {
+        if (timer === null) timer = setTimeout(fire, VIEWABLE_MS)
+      } else {
+        clearTimer()
+      }
+    }
+
+    const onVisibilityChange = () => evaluate()
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        // The last entry carries the current intersection ratio.
+        ratio = entries[entries.length - 1]?.intersectionRatio ?? 0
+        evaluate()
+      },
+      // Extra thresholds around the 0.5 boundary so the callback fires
+      // promptly when the card crosses half-visible from either side.
+      { threshold: [0, 0.25, 0.5, 0.75, 1] },
+    )
+    observer.observe(el)
+    document.addEventListener('visibilitychange', onVisibilityChange)
+
+    return () => {
+      observer.disconnect()
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+      clearTimer()
+    }
+    // `ad` is a stable object identity per serve (setAd once per fetch).
+  }, [ad])
+
   if (!ad) return null
 
-  function recordClick() {
-    if (!ad || clickedRef.current) return
-    const reservationId = ad.reservationId
-    clickedRef.current = true
-    fetch('/api/ads/click', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ reservationId }),
-      keepalive: true,
-    }).catch(() => undefined)
-  }
+  // The click goes through the signed redirect route; the honest https
+  // destination is only ever read by the server from the signed token.
+  const clickHref = ad.clickToken
+    ? `/api/ads/click/${encodeURIComponent(ad.clickToken)}`
+    : ad.targetUrl
 
   if (ad.format === 'banner' && ad.imageUrl) {
     return (
       <a
+        ref={cardRef}
         className={`${SLOT_BASE} ${BANNER_VARIANTS[variant]}`}
-        href={ad.targetUrl}
+        href={clickHref}
         target="_blank"
         rel="sponsored noopener noreferrer"
-        onClick={recordClick}
         data-host={ad.targetHost}
       >
         <span className="absolute -top-2.5 start-3.5 z-[1] inline-flex items-center gap-1.5 rounded-md border border-chart-4/40 bg-card px-2 py-0.5 text-[0.66rem] font-bold uppercase tracking-[0.08em] text-chart-4">
@@ -167,11 +254,11 @@ export function AdSlot({
   const isStrip = variant === 'banner'
   return (
     <a
+      ref={cardRef}
       className={`${SLOT_BASE} ${TEXT_VARIANTS[variant]}`}
-      href={ad.targetUrl}
+      href={clickHref}
       target="_blank"
       rel="sponsored noopener noreferrer"
-      onClick={recordClick}
       data-host={ad.targetHost}
     >
       <span

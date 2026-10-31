@@ -426,6 +426,7 @@ Builds are secret-free by design: `.dockerignore` excludes `.env*`, so `docker b
 | `SOCIAL_TRINITY_URL` | no | Team card link for Trinity (Programmer) on `/about`. |
 | `SOCIAL_GROBOFHIK_URL` | no | Team card link for Grobofhik (Programmer) on `/about`. |
 | `ADS_ENABLED` | no | Master switch for ad SERVING (`true`/`false`, default on). `false` makes every `<AdSlot/>` render nothing while the /ads dashboard keeps working. |
+| `ADS_EVENT_SECRET` | no | Phase 3 event pipeline: HMAC secret for the ad tokens that authenticate `/api/ads/click/[token]` and `/api/ads/event`. Empty (default) falls back to `AUTH_SECRET` — set it only to rotate ad tokens independently of sessions. |
 | `ADS_TOPUP_MODE` | no | How a crypto top-up is confirmed: empty/AUTO (default — `blockbee` when `BLOCKBEE_API_KEY` is set, else `manual`), `blockbee`, `manual` (admin confirms) or `simulate` (advertiser self-confirms; demos/local only, never on a public site). |
 | `ADS_TOPUP_SEED` | no | Seed for the deterministic deposit-address derivation (mock HD wallet, manual/simulate fallback only). Set a long random string in production; empty = dev default. |
 | `BLOCKBEE_API_KEY` | no | BlockBee payment processor API key (https://blockbee.io — formerly CryptAPI). When set, ad top-ups run through BlockBee (hosted deposit addresses, AML screening, ~0.25–1% fees) and referral-payout withdrawals are enabled. Empty = processor disabled (manual top-up fallback, withdrawals off). |
@@ -644,13 +645,16 @@ All endpoints return `{ ok: true, data }` or `{ ok: false, error, issues? }`. Mu
 | --- | --- | --- |
 | GET | `/api/health` | liveness + DB check (Docker healthcheck) |
 | POST | `/api/waitlist` | Merklane Ads waitlist (idempotent, Resend confirmation) |
-| GET | `/api/ads/serve?slot=…` | one auction pick for a slot: 50/50 CPC/CPM pool split, weighted-random inside the pool (204 when nothing eligible — no empty boxes) |
-| POST | `/api/ads/click` | a valid click finalises its held BudgetReservation (same-origin enforced, exactly one charge — CPM clicks are a no-op) |
+| GET | `/api/ads/serve?slot=…` | one auction pick for a slot: 50/50 CPC/CPM pool split, weighted-random inside the pool (204 when nothing eligible — no empty boxes). Phase 3: bots/crawlers get 204 before the auction, the serve logs a `loaded_impression` AdEvent and mints the HMAC ad token; SERVING NEVER CHARGES — both models hold a HELD BudgetReservation |
+| GET | `/api/ads/click/[token]` | Phase 3 secure redirect: validates the serve's HMAC token, logs `valid_click` (exactly once — duplicates are no-ops), charges the CPC campaign (the only CPC billing event) and 302-redirects to the signed https destination. CPM clicks redirect + log, never charge |
+| POST | `/api/ads/event` | Phase 3 viewability beacon: `<AdSlot/>` fires it after the ad is ≥ 50 % visible for one continuous second in an active tab (IntersectionObserver + Page Visibility API). Server re-verifies the HMAC token; for CPM this is the only billing event (charge bid/1000), for CPC it is informational. Rate limited 30/min/IP; bots 403; duplicates are idempotent no-ops |
 | GET/POST | `/api/ads/campaigns` | advertiser: list own campaigns with ledger-derived budget state + per-model stats / create (format × billing model independent; `submit:false` saves a free DRAFT, `submit:true` reserves the budget and queues the campaign for moderation) |
 | PATCH | `/api/ads/campaigns/[id]` | advertiser: pause / resume (needs budget ≥ one event) / fund (RESERVE) / update (appends creative v+1; editing an approved campaign re-queues it for moderation) / submit (DRAFT/REJECTED → PENDING, reserves the budget) / delete (soft delete from any state + REFUND of the unspent budget) |
 | POST | `/api/ads/assets/upload` | banner creative upload: PNG/JPEG/WebP only (magic-byte content sniffing — the declared type is ignored), ≤ 1.5 MB, stored locally under `/uploads/ads/` with server-generated names |
 | GET | `/api/ads/wallet` | the Wallet tab: available + reserved micro-USD, pending deposits, the immutable ledger (credit/reserve/charge/refund), deposit config |
 | POST/GET | `/api/ads/topups[/id]` | crypto deposit to the ad WALLET: create a payment intention (BlockBee hosted address, or the derived mock address in manual/simulate fallback) / poll status |
+| GET | `/api/ads/reports` | Phase 3 Reports tab: per-campaign delivery metrics (impressions, viewable impressions, clicks, CTR, spent, eCPC) from the AdEvent log + the ledger; no-data metrics are null (rendered as an em dash) |
+| GET | `/api/ads/reports/export` | Phase 3 CSV export of the same metrics — formula-safe (leading `= + - @` neutralised), UTF-8 BOM, CRLF; no-data metrics export as `—` |
 | POST | `/api/ads/topups/[id]/simulate` | DEMO path — self-confirm a top-up (only when ADS_TOPUP_MODE=simulate) |
 | POST | `/api/admin/ads/topups/[id]/confirm` | admin: mark a deposit received, credit the ad wallet (optional amount override) |
 | GET/POST | `/api/webhooks/blockbee` | BlockBee IPN + payout webhooks: signature-verified (RSA `x-ca-signature` and/or HMAC `token`), rate-limited, idempotent — routes `prem_`/`premplus_` orders to subscription activation and everything else to ad-wallet credits, pays referral commissions, settles withdrawals |

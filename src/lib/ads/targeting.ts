@@ -177,6 +177,14 @@ export interface AdRequestContext {
   keywords?: string[]
   /** Hashtags of the page being served (post tags). */
   hashtags?: string[]
+  /**
+   * Phase 3 event pipeline: visitor User-Agent + best-effort IP. Not used
+   * for targeting — they feed the AdEvent anti-fraud/analytics columns on
+   * the loaded_impression row written at serve time (the bot filter itself
+   * runs earlier, in the serve route, so bots never even reach the auction).
+   */
+  userAgent?: string
+  visitorIp?: string
 }
 
 /** The targeting slice of a Campaign row, as the auction reads it. */

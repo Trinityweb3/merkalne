@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslations } from 'next-intl'
-import { Megaphone, PencilLine, Plus, Send, Target, Trash2, Wallet, X } from 'lucide-react'
+import { Megaphone, PencilLine, Plus, Send, Target, Trash2, Wallet, X, BarChart3 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { api } from '@/lib/api-client'
@@ -17,6 +17,7 @@ import {
   CampaignWizard,
   type WizardCampaign,
 } from '@/components/site/ads/campaign-wizard'
+import { AdsReportsView } from '@/components/site/ads/ads-reports'
 
 /**
  * Advertiser dashboard — the "Merklane ADS" tab of the profile cabinet.
@@ -175,7 +176,7 @@ function toggleIn(list: string[], value: string): string[] {
   return list.includes(value) ? list.filter((v) => v !== value) : [...list, value]
 }
 
-type AdsView = 'wallet' | 'campaigns'
+type AdsView = 'wallet' | 'campaigns' | 'reports'
 
 export function AdsDashboard() {
   const t = useTranslations('ads')
@@ -419,6 +420,17 @@ export function AdsDashboard() {
           >
             <Megaphone width={14} height={14} aria-hidden /> {t('tabCampaigns')}
           </button>
+          {/* Phase 3: Reports — real delivery metrics (impressions, viewable
+              impressions, clicks, CTR, spent, eCPC) + the CSV export. */}
+          <button
+            type="button"
+            role="tab"
+            aria-selected={view === 'reports'}
+            className={`chip ${view === 'reports' ? 'selected' : ''}`}
+            onClick={() => setView('reports')}
+          >
+            <BarChart3 width={14} height={14} aria-hidden /> {t('tabReports')}
+          </button>
         </div>
       </div>
 
@@ -437,6 +449,8 @@ export function AdsDashboard() {
             setDepositOpen(true)
           }}
         />
+      ) : view === 'reports' ? (
+        <AdsReportsView />
       ) : (
         <CampaignsView
           campaigns={campaigns}

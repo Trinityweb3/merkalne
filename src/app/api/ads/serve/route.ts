@@ -1,6 +1,7 @@
 import { handleRouteError, jsonOk } from '@/lib/api'
 import { clientIp, rateLimit } from '@/lib/rate-limit'
 import { AD_SLOT_IDS, serveAd, type AdSlotId } from '@/lib/ads/auction'
+import { isKnownBot } from '@/lib/ads/antifraud'
 import {
   AD_SECTION_CONTEXTS,
   AD_LOCALE_CODES,
@@ -48,6 +49,10 @@ function splitPhrases(raw: string, maxLen: number, max: number): string[] {
  * per IP, and ALWAYS a fast 204 when nothing is eligible: the <AdSlot/>
  * component renders nothing on 204, so a sold-out auction leaves no empty
  * boxes on the page.
+ *
+ * Phase 3 anti-fraud: known bots/crawlers (User-Agent) get a 204 BEFORE the
+ * auction runs — no BudgetReservation and no loaded_impression row is ever
+ * created for them, so nothing a bot does downstream can be billable.
  */
 export async function GET(req: Request) {
   try {
@@ -56,6 +61,10 @@ export async function GET(req: Request) {
     if (!(AD_SLOT_IDS as readonly string[]).includes(slot)) {
       return jsonOk({ ad: null }, { status: 200 })
     }
+
+    // Phase 3 anti-fraud — bots never see (nor hold budget for) an ad.
+    const userAgent = req.headers.get('user-agent')
+    if (isKnownBot(userAgent)) return new Response(null, { status: 204 })
 
     const rl = rateLimit(`ads-serve:${clientIp(req)}`, 30, 60_000)
     if (!rl.ok) return new Response(null, { status: 204 })
@@ -89,6 +98,10 @@ export async function GET(req: Request) {
       country,
       keywords: keywords.length > 0 ? keywords : undefined,
       hashtags: hashtags.length > 0 ? hashtags : undefined,
+      // Phase 3: feeds the AdEvent anti-fraud/analytics columns on the
+      // loaded_impression row (bot filtering already happened above).
+      userAgent: userAgent ?? undefined,
+      visitorIp: clientIp(req),
     })
     if (!ad) return new Response(null, { status: 204 })
     return jsonOk({ ad })

@@ -327,12 +327,12 @@ assert_file_contains "${ROOT}/src/app/api/ads/campaigns/[id]/route.ts" 'refundCa
   "campaigns PATCH delete: unspent budget refunded to the wallet"
 assert_file_contains "${ROOT}/src/app/api/ads/wallet/route.ts" 'ledger:' \
   "wallet GET: exposes the immutable ledger (double-entry trail)"
-assert_file_contains "${ROOT}/src/app/api/ads/click/route.ts" 'reservationId: z.string' \
-  "click POST: keyed by the BudgetReservation id"
+assert_file_contains "${ROOT}/src/app/api/ads/click/[token]/route.ts" 'payload.r' \
+  "click route: keyed by the signed reservation id (Phase 3 token payload)"
 assert_file_contains "${ROOT}/src/components/site/ads/ad-slot.tsx" "ad.format === 'banner'" \
   "AdSlot: banner format renders the image creative"
 assert_file_contains "${ROOT}/src/components/site/ads/ad-slot.tsx" 'reservationId' \
-  "AdSlot: click beacon echoes the reservation id"
+  "AdSlot: ServedAd carries the reservation id (debug/analytics)"
 assert_file_contains "${ROOT}/src/components/site/ads/campaign-wizard.tsx" 'billingCpc' \
   "wizard: billing model chips (CPC — pay per click)"
 assert_file_contains "${ROOT}/src/components/site/ads/ads-dashboard.tsx" 'formatBanner' \
@@ -475,6 +475,138 @@ assert_file_contains "${ROOT}/scripts/test-ads-e2e.ts" 'Phase 2' \
   "ads e2e: suite covers Phase 2 (wizard/uploads/moderation)"
 assert_file_contains "${ROOT}/scripts/test-ads-e2e.ts" 'content sniffing' \
   "ads e2e: upload content sniffing covered"
+
+# --- Ads Phase 3: event pipeline, viewability, anti-fraud, reporting ------
+[ -f "${ROOT}/prisma/migrations/0013_ads_phase3_events/migration.sql" ] && echo "  [ok]   migration 0013_ads_phase3_events present" \
+  || { echo "  [FAIL] prisma/migrations/0013_ads_phase3_events missing"; fail=1; }
+assert_file_contains "${ROOT}/prisma/migrations/0013_ads_phase3_events/migration.sql" 'CREATE TABLE "AdEvent"' \
+  "migration 0013: AdEvent delivery log"
+assert_file_contains "${ROOT}/prisma/migrations/0013_ads_phase3_events/migration.sql" 'CREATE UNIQUE INDEX "AdEvent_reservationId_eventType_key"' \
+  "migration 0013: exactly-once event guard (unique reservation+type)"
+for PHASE3_SCHEMA in schema.prisma schema.sqlite.prisma; do
+  assert_file_contains "${ROOT}/prisma/${PHASE3_SCHEMA}" 'model AdEvent' \
+    "schema (${PHASE3_SCHEMA}): AdEvent model"
+  assert_file_contains "${ROOT}/prisma/${PHASE3_SCHEMA}" '@@unique([reservationId, eventType])' \
+    "schema (${PHASE3_SCHEMA}): AdEvent exactly-once unique index"
+done
+[ -f "${ROOT}/src/lib/ads/tokens.ts" ] && echo "  [ok]   HMAC ad-token lib present" \
+  || { echo "  [FAIL] src/lib/ads/tokens.ts missing"; fail=1; }
+assert_file_contains "${ROOT}/src/lib/ads/tokens.ts" 'export function signAdToken' \
+  "tokens.ts: token minting (serve-time HMAC)"
+assert_file_contains "${ROOT}/src/lib/ads/tokens.ts" 'export function verifyAdToken' \
+  "tokens.ts: token verification (constant-time)"
+[ -f "${ROOT}/src/lib/ads/events.ts" ] && echo "  [ok]   AdEvent logging lib present" \
+  || { echo "  [FAIL] src/lib/ads/events.ts missing"; fail=1; }
+assert_file_contains "${ROOT}/src/lib/ads/events.ts" "'loaded_impression' | 'viewable_impression' | 'valid_click'" \
+  "events.ts: the three funnel stages logged separately"
+assert_file_contains "${ROOT}/src/lib/ads/events.ts" 'duplicate: true' \
+  "events.ts: replayed events resolve as duplicates (never a second charge)"
+[ -f "${ROOT}/src/lib/ads/antifraud.ts" ] && echo "  [ok]   anti-fraud lib present" \
+  || { echo "  [FAIL] src/lib/ads/antifraud.ts missing"; fail=1; }
+assert_file_contains "${ROOT}/src/lib/ads/antifraud.ts" 'export function isKnownBot' \
+  "antifraud.ts: User-Agent bot filter (serve/click/event)"
+assert_file_contains "${ROOT}/src/lib/ads/antifraud.ts" 'export function hashVisitorIp' \
+  "antifraud.ts: salted visitor-IP hash (never the raw IP)"
+[ -f "${ROOT}/src/app/api/ads/click/[token]/route.ts" ] && echo "  [ok]   signed click redirect route present" \
+  || { echo "  [FAIL] src/app/api/ads/click/[token]/route.ts missing"; fail=1; }
+assert_file_contains "${ROOT}/src/app/api/ads/click/[token]/route.ts" 'verifyAdToken' \
+  "click route: HMAC validation before anything billable"
+assert_file_contains "${ROOT}/src/app/api/ads/click/[token]/route.ts" 'finalizeClick' \
+  "click route: the only CPC billing event (held → finalized + charge)"
+assert_file_contains "${ROOT}/src/app/api/ads/click/[token]/route.ts" "status: 302" \
+  "click route: 302 redirect to the signed destination"
+[ -f "${ROOT}/src/app/api/ads/event/route.ts" ] && echo "  [ok]   viewability beacon endpoint present" \
+  || { echo "  [FAIL] src/app/api/ads/event/route.ts missing"; fail=1; }
+assert_file_contains "${ROOT}/src/app/api/ads/event/route.ts" 'viewable_impression' \
+  "event route: viewability beacons only"
+assert_file_contains "${ROOT}/src/app/api/ads/event/route.ts" 'finalizeView' \
+  "event route: the only CPM billing event"
+assert_file_contains "${ROOT}/src/app/api/ads/event/route.ts" 'EVENT_RATE_LIMIT' \
+  "event route: per-IP rate limit (anti-spam)"
+assert_file_contains "${ROOT}/src/app/api/ads/serve/route.ts" 'isKnownBot' \
+  "serve route: bots get no ad (no reservation, no event)"
+assert_file_contains "${ROOT}/src/lib/ads/auction.ts" 'finalizeView' \
+  "auction: CPM finalisation moved to the view event"
+assert_file_contains "${ROOT}/src/lib/ads/auction.ts" "eventType: 'loaded_impression'" \
+  "auction: serve logs the loaded_impression event server-side"
+assert_file_contains "${ROOT}/src/lib/ads/auction.ts" 'clickToken' \
+  "auction: every serve mints the HMAC ad token"
+if grep -qF "ChargeGuardFailed" "${ROOT}/src/lib/ads/auction.ts" 2>/dev/null; then
+  echo "  [FAIL] auction.ts still carries the Phase-1 CPM charge-at-serve path"
+  fail=1
+else
+  echo "  [ok]   auction.ts: charging at SERVE time removed (validated events only)"
+fi
+assert_file_contains "${ROOT}/src/components/site/ads/ad-slot.tsx" 'IntersectionObserver' \
+  "AdSlot: viewability measured with the IntersectionObserver (≥ 50 %)"
+assert_file_contains "${ROOT}/src/components/site/ads/ad-slot.tsx" 'VIEWABLE_MS' \
+  "AdSlot: one continuous second (VIEWABLE_MS)"
+assert_file_contains "${ROOT}/src/components/site/ads/ad-slot.tsx" "visibilitychange" \
+  "AdSlot: Page Visibility API (active-tab requirement)"
+assert_file_contains "${ROOT}/src/components/site/ads/ad-slot.tsx" "'/api/ads/event'" \
+  "AdSlot: viewability beacon endpoint"
+assert_file_contains "${ROOT}/src/components/site/ads/ad-slot.tsx" 'api/ads/click/' \
+  "AdSlot: clicks go through the signed redirect route"
+[ -f "${ROOT}/src/lib/ads/reporting.ts" ] && echo "  [ok]   reporting aggregation lib present" \
+  || { echo "  [FAIL] src/lib/ads/reporting.ts missing"; fail=1; }
+assert_file_contains "${ROOT}/src/lib/ads/reporting.ts" 'campaignReportRows' \
+  "reporting.ts: per-campaign metrics aggregation"
+assert_file_contains "${ROOT}/src/lib/ads/reporting.ts" 'ecpcMicroUsd' \
+  "reporting.ts: eCPC = spent / clicks"
+[ -f "${ROOT}/src/lib/ads/report-format.ts" ] && echo "  [ok]   report display formats present" \
+  || { echo "  [FAIL] src/lib/ads/report-format.ts missing"; fail=1; }
+assert_file_contains "${ROOT}/src/lib/ads/report-format.ts" "NO_DATA = '—'" \
+  "report-format.ts: em dash for no-data metrics (never \$0.00 / 0%)"
+[ -f "${ROOT}/src/app/api/ads/reports/route.ts" ] && echo "  [ok]   reports API route present" \
+  || { echo "  [FAIL] src/app/api/ads/reports/route.ts missing"; fail=1; }
+[ -f "${ROOT}/src/app/api/ads/reports/export/route.ts" ] && echo "  [ok]   CSV export route present" \
+  || { echo "  [FAIL] src/app/api/ads/reports/export/route.ts missing"; fail=1; }
+assert_file_contains "${ROOT}/src/app/api/ads/reports/export/route.ts" 'sanitizeCsvCell' \
+  "CSV export: formula-injection guard"
+assert_file_contains "${ROOT}/src/app/api/ads/reports/export/route.ts" 'FORMULA_PREFIX' \
+  "CSV export: leading = + - @ neutralised"
+assert_file_contains "${ROOT}/src/app/api/ads/reports/export/route.ts" '\uFEFF' \
+  "CSV export: UTF-8 BOM for Excel"
+[ -f "${ROOT}/src/components/site/ads/ads-reports.tsx" ] && echo "  [ok]   Reports tab component present" \
+  || { echo "  [FAIL] src/components/site/ads/ads-reports.tsx missing"; fail=1; }
+assert_file_contains "${ROOT}/src/components/site/ads/ads-reports.tsx" 'AdsReportsView' \
+  "reports view: mounted component"
+assert_file_contains "${ROOT}/src/components/site/ads/ads-reports.tsx" 'downloadCsv' \
+  "reports view: Download CSV button"
+assert_file_contains "${ROOT}/src/components/site/ads/ads-dashboard.tsx" "tabReports" \
+  "dashboard: third tab (Reports) wired"
+assert_file_contains "${ROOT}/src/components/site/ads/ads-dashboard.tsx" "view === 'reports'" \
+  "dashboard: reports view branch"
+assert_file_contains "${ROOT}/src/lib/env.ts" 'ADS_EVENT_SECRET' \
+  "env: dedicated ads HMAC secret (falls back to AUTH_SECRET)"
+assert_file_contains "${ROOT}/.env.example" 'ADS_EVENT_SECRET' \
+  ".env.example: ADS_EVENT_SECRET documented"
+# every dictionary carries the Phase-3 reports keys (grep loop, all 20 locales)
+PHASE3_COUNT="$(ls -1 "${ROOT}/src/i18n/messages" | grep -c '\.ts$')"
+PHASE3_OK=0
+for PHASE3_FILE in "${ROOT}"/src/i18n/messages/*.ts; do
+  if grep -q "tabReports:" "${PHASE3_FILE}" && grep -q "downloadCsv:" "${PHASE3_FILE}" && grep -q "colEcpc:" "${PHASE3_FILE}"; then
+    PHASE3_OK=$((PHASE3_OK + 1))
+  else
+    echo "  [FAIL] ${PHASE3_FILE##*/}: missing Phase-3 reports keys (tabReports/downloadCsv/colEcpc)"
+    fail=1
+  fi
+done
+[ "${PHASE3_OK}" -eq "${PHASE3_COUNT}" ] && echo "  [ok]   Phase-3 reports keys present in ${PHASE3_OK}/${PHASE3_COUNT} dictionaries" \
+  || { echo "  [FAIL] Phase-3 reports keys: only ${PHASE3_OK}/${PHASE3_COUNT} dictionaries covered"; fail=1; }
+# Phase-3 e2e: the events suite (HTTP + real Chromium viewability/click)
+[ -f "${ROOT}/scripts/test-ads-events-e2e.ts" ] && echo "  [ok]   Phase-3 events e2e suite present" \
+  || { echo "  [FAIL] scripts/test-ads-events-e2e.ts missing"; fail=1; }
+[ -f "${ROOT}/scripts/run-ads-events-e2e.sh" ] && echo "  [ok]   events e2e runner present" \
+  || { echo "  [FAIL] scripts/run-ads-events-e2e.sh missing"; fail=1; }
+assert_file_contains "${ROOT}/scripts/test-ads-events-e2e.ts" 'IntersectionObserver' \
+  "events e2e: the viewability contract is tested"
+assert_file_contains "${ROOT}/scripts/test-ads-events-e2e.ts" 'viewable_impression' \
+  "events e2e: viewable impressions covered"
+assert_file_contains "${ROOT}/scripts/test-ads-events-e2e.ts" 'chromium' \
+  "events e2e: a real Chromium pass (Playwright)"
+assert_file_contains "${ROOT}/scripts/test-ads-events-e2e.ts" 'formula' \
+  "events e2e: CSV injection covered"
 # --- BlockBee processor + referral system (2026 payments build) ----------------
 assert_file_contains "${ROOT}/prisma/schema.prisma" 'model PaymentLog' \
   "schema: PaymentLog audit trail"
@@ -791,18 +923,33 @@ for STAGE_MUST in \
   "src/components/site/ads/campaign-wizard.tsx" \
   "src/components/site/ads/ads-dashboard.tsx" \
   "src/components/site/ads/ad-slot.tsx" \
+  "src/components/site/ads/ads-reports.tsx" \
   "src/lib/ads/moderation.ts" \
   "src/lib/ads/targeting.ts" \
   "src/lib/ads/wallet.ts" \
   "src/lib/ads/auction.ts" \
   "src/lib/ads/money.ts" \
+  "src/lib/ads/tokens.ts" \
+  "src/lib/ads/events.ts" \
+  "src/lib/ads/antifraud.ts" \
+  "src/lib/ads/reporting.ts" \
+  "src/lib/ads/report-format.ts" \
+  "src/app/api/ads/serve/route.ts" \
+  "src/app/api/ads/click/[token]/route.ts" \
+  "src/app/api/ads/event/route.ts" \
+  "src/app/api/ads/reports/route.ts" \
+  "src/app/api/ads/reports/export/route.ts" \
   "src/app/api/webhooks/telegram-admin/route.ts" \
   "src/app/api/webhooks/blockbee/route.ts" \
   "prisma/schema.prisma" \
   "prisma/schema.sqlite.prisma" \
   "prisma/migrations/0011_ads_phase1_double_entry/migration.sql" \
   "prisma/migrations/0012_ads_phase2_targeting_moderation/migration.sql" \
+  "prisma/migrations/0013_ads_phase3_events/migration.sql" \
   "scripts/test-ads-e2e.ts" \
+  "scripts/test-ads-events-e2e.ts" \
+  "scripts/run-ads-events-e2e.sh" \
+  "scripts/ui18n-codegen/inject-ads-phase3.ts" \
   "src/i18n/messages/en.ts"; do
   if [ -f "${STAGE}/merklane/${STAGE_MUST}" ]; then
     echo "  [ok]   staged: ${STAGE_MUST}"
@@ -1075,8 +1222,8 @@ assert_file_contains "${VERIFY_DIR}/merklane/src/lib/ads/auction.ts" 'pickPoolAn
   "archive: auction.ts 50/50 pool split"
 assert_file_contains "${VERIFY_DIR}/merklane/src/lib/ads/auction.ts" 'RESERVATION_TTL_MS = 30 * 60 * 1000' \
   "archive: auction.ts 30-minute hold TTL"
-assert_file_contains "${VERIFY_DIR}/merklane/src/app/api/ads/click/route.ts" 'reservationId: z.string' \
-  "archive: click route keyed by reservation id"
+assert_file_contains "${VERIFY_DIR}/merklane/src/app/api/ads/click/[token]/route.ts" 'payload.r' \
+  "archive: click route keyed by the signed reservation id"
 assert_file_contains "${VERIFY_DIR}/merklane/src/app/api/ads/wallet/route.ts" 'ledger:' \
   "archive: wallet route exposes the ledger"
 assert_file_contains "${VERIFY_DIR}/merklane/src/components/site/ads/ad-slot.tsx" "ad.format === 'banner'" \
@@ -1186,6 +1333,76 @@ if [ -n "$(find "${VERIFY_DIR}/merklane/src/app/api" -name '*upload*' -type d)" 
   echo "  [ok]   archive: upload directories findable under src/app/api"
 else
   echo "  [FAIL] archive: find src/app/api -name '*upload*' is empty — exclude bug" >&2
+  archive_fail=1
+fi
+# --- Ads Phase 3 (in-archive mirror) -------------------------------------------
+for PHASE3_ARCHIVE_FILE in \
+  "src/lib/ads/tokens.ts" \
+  "src/lib/ads/events.ts" \
+  "src/lib/ads/antifraud.ts" \
+  "src/lib/ads/reporting.ts" \
+  "src/lib/ads/report-format.ts" \
+  "src/app/api/ads/click/[token]/route.ts" \
+  "src/app/api/ads/event/route.ts" \
+  "src/app/api/ads/reports/route.ts" \
+  "src/app/api/ads/reports/export/route.ts" \
+  "src/components/site/ads/ads-reports.tsx" \
+  "prisma/migrations/0013_ads_phase3_events/migration.sql" \
+  "scripts/test-ads-events-e2e.ts" \
+  "scripts/run-ads-events-e2e.sh"; do
+  if [ -f "${VERIFY_DIR}/merklane/${PHASE3_ARCHIVE_FILE}" ]; then
+    echo "  [ok]   archive: ${PHASE3_ARCHIVE_FILE} ships"
+  else
+    echo "  [FAIL] archive: ${PHASE3_ARCHIVE_FILE} MISSING" >&2
+    archive_fail=1
+  fi
+done
+assert_file_contains "${VERIFY_DIR}/merklane/src/app/api/ads/click/[token]/route.ts" 'verifyAdToken' \
+  "archive: click route validates the HMAC token"
+assert_file_contains "${VERIFY_DIR}/merklane/src/app/api/ads/click/[token]/route.ts" "status: 302" \
+  "archive: click route redirects to the signed destination"
+assert_file_contains "${VERIFY_DIR}/merklane/src/app/api/ads/event/route.ts" 'EVENT_RATE_LIMIT' \
+  "archive: event endpoint rate limited"
+assert_file_contains "${VERIFY_DIR}/merklane/src/app/api/ads/event/route.ts" 'finalizeView' \
+  "archive: viewable impression is the only CPM billing event"
+assert_file_contains "${VERIFY_DIR}/merklane/src/app/api/ads/serve/route.ts" 'isKnownBot' \
+  "archive: serve route blocks bots before the auction"
+assert_file_contains "${VERIFY_DIR}/merklane/src/lib/ads/auction.ts" "eventType: 'loaded_impression'" \
+  "archive: serve logs loaded_impression server-side"
+if grep -qF "ChargeGuardFailed" "${VERIFY_DIR}/merklane/src/lib/ads/auction.ts" 2>/dev/null; then
+  echo "  [FAIL] archive: auction.ts still charges CPM at serve time (Phase-1 leftover)" >&2
+  archive_fail=1
+else
+  echo "  [ok]   archive: no charge at serve time — validated events only"
+fi
+assert_file_contains "${VERIFY_DIR}/merklane/src/components/site/ads/ad-slot.tsx" 'IntersectionObserver' \
+  "archive: AdSlot measures viewability (≥ 50 %)"
+assert_file_contains "${VERIFY_DIR}/merklane/src/components/site/ads/ad-slot.tsx" 'visibilitychange' \
+  "archive: AdSlot honours the active-tab requirement"
+assert_file_contains "${VERIFY_DIR}/merklane/src/components/site/ads/ad-slot.tsx" "VIEWABLE_MS" \
+  "archive: AdSlot one-continuous-second timer"
+assert_file_contains "${VERIFY_DIR}/merklane/src/app/api/ads/reports/export/route.ts" 'sanitizeCsvCell' \
+  "archive: CSV export formula-injection guard"
+assert_file_contains "${VERIFY_DIR}/merklane/src/lib/ads/report-format.ts" "NO_DATA = '—'" \
+  "archive: em dash for no-data metrics"
+assert_file_contains "${VERIFY_DIR}/merklane/src/components/site/ads/ads-dashboard.tsx" "tabReports" \
+  "archive: dashboard third tab (Reports)"
+archive_phase3_i18n_ok=0
+for dict in "${VERIFY_DIR}"/merklane/src/i18n/messages/*.ts; do
+  if grep -q "tabReports:" "${dict}" && grep -q "downloadCsv:" "${dict}" && grep -q "colEcpc:" "${dict}"; then
+    archive_phase3_i18n_ok=$((archive_phase3_i18n_ok + 1))
+  fi
+done
+[ "${archive_phase3_i18n_ok}" -eq 20 ] && echo "  [ok]   archive: Phase-3 reports keys in all 20 dictionaries" \
+  || { echo "  [FAIL] archive: Phase-3 reports keys in only ${archive_phase3_i18n_ok}/20 dictionaries"; archive_fail=1; }
+# Phase-3 landmarks, greppable the way a downstream verifier would:
+if grep -rq "viewable_impression" "${VERIFY_DIR}/merklane/src/" \
+  && grep -rq "IntersectionObserver" "${VERIFY_DIR}/merklane/src/" \
+  && grep -rq "sanitizeCsvCell" "${VERIFY_DIR}/merklane/src/" \
+  && grep -rq "isKnownBot" "${VERIFY_DIR}/merklane/src/"; then
+  echo "  [ok]   archive: Phase-3 landmarks greppable (viewable_impression / IntersectionObserver / sanitizeCsvCell / isKnownBot)"
+else
+  echo "  [FAIL] archive: Phase-3 landmarks not greppable — stale or partial bundle" >&2
   archive_fail=1
 fi
 # Cross-check: every file listed in the archive MANIFEST exists after extraction

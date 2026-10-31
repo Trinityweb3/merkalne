@@ -619,6 +619,7 @@ model Campaign {
   advertiser   User                @relation(fields: [advertiserId], references: [id], onDelete: Cascade)
   creatives    Creative[]
   reservations BudgetReservation[]
+  adEvents     AdEvent[]
 
   @@index([status, deletedAt])
   @@index([advertiserId, createdAt])
@@ -676,18 +677,28 @@ model Creative {
 /**
  * In-flight budget hold for ONE billable event.
  *
- *   CPC:  created HELD for one bid when the ad is served; the visitor's
- *         click within 30 minutes finalises it (charge + ledger entry);
- *         after 30 minutes it EXPIRES and the campaign budget recovers.
- *   CPM:  created FINALISED at serve time for bid/1000 — Phase 1 counts the
- *         served impression as the confirmed view (viewability measurement
- *         is explicitly out of scope for Phase 1); expiresAt is kept for
- *         record-keeping only.
+ *   Phase 3 event pipeline — SERVING NEVER CHARGES. Both models create the
+ *   reservation HELD; the charge happens only when a validated event
+ *   finalises it:
+ *
+ *   CPC:  created HELD for one bid when the ad is served; a valid click
+ *         (through the signed /api/ads/click/[token] redirect) within 30
+ *         minutes finalises it (charge + ledger entry).
+ *   CPM:  created HELD for bid/1000 when the ad is served; a valid
+ *         viewable_impression event (≥ 50 % of the ad visible for one
+ *         continuous second in an active tab, measured client-side and
+ *         verified server-side against the HMAC token) finalises it.
+ *
+ *   No validating event within the 30-minute TTL → the sweeper
+ *   (expireStaleReservations) flips the row to EXPIRED and the held amount
+ *   is released back to the campaign's derived budget — the advertiser is
+ *   never charged for an unviewable, unclicked serve ("refund on expiry").
  *
  * status: "held" | "finalized" | "expired" (app-layer validated). Rows are
- * immutable once finalised/expired; the sweeper (expireStaleReservations)
- * flips overdue HELD rows to EXPIRED — a single conditional updateMany, so
- * it is safe to call from every serve/click/dashboard read.
+ * immutable once finalised/expired; a duplicate click/event on a FINALIZED
+ * row is a no-op (the conditional status flip settles double-fires to a
+ * single charge; the unique ledger eventId charge:<reservationId> is the
+ * second line of defence).
  */
 model BudgetReservation {
   id             String   @id @default(cuid())
@@ -704,6 +715,57 @@ model BudgetReservation {
 
   @@index([campaignId, status])
   @@index([status, expiresAt])
+}
+
+/**
+ * Phase 3 event pipeline — the delivery log behind the advertiser reports.
+ *
+ * One row per (reservation, event type). The three types are logged
+ * SEPARATELY so the dashboard can report each stage of the funnel:
+ *
+ *   loaded_impression    the ad was served (logged atomically with the
+ *                        BudgetReservation creation — server-side, cannot
+ *                        be forged or missed)
+ *   viewable_impression  the client confirmed ≥ 50 % of the ad was visible
+ *                        for one continuous second in an active tab
+ *                        (IntersectionObserver + Page Visibility API in
+ *                        <AdSlot/>; verified server-side against the HMAC
+ *                        ad token). Billable for CPM, informational for CPC.
+ *   valid_click           the visitor clicked through the signed redirect
+ *                        route /api/ads/click/[token] while the reservation
+ *                        was still in its window. Billable for CPC,
+ *                        informational for CPM (CPM bills views, not clicks).
+ *
+ * @@unique([reservationId, eventType]) is the exactly-once guard: a double
+ * click, a replayed beacon or a bot retrying the event can insert the row
+ * only once (P2002 → treated as a duplicate, never a second charge — the
+ * charge itself is additionally guarded by the reservation's conditional
+ * status flip and the unique ledger eventId).
+ *
+ * ipHash is a salted SHA-256 prefix of the visitor IP (never the raw IP);
+ * userAgent is kept truncated for anti-fraud analytics. slot records which
+ * placement delivered the event.
+ */
+model AdEvent {
+  id            String   @id @default(cuid())
+  campaignId    String
+  /// The BudgetReservation this event belongs to (the serve's in-flight hold).
+  reservationId String
+  /// "loaded_impression" | "viewable_impression" | "valid_click"
+  eventType     String
+  /// Placement id ("home_banner" | "feed" | "article_bottom").
+  slot          String?
+  /// Truncated User-Agent of the visitor (anti-fraud analytics).
+  userAgent     String?
+  /// Salted SHA-256 prefix of the visitor IP — anonymised, never raw.
+  ipHash        String?
+  createdAt     DateTime @default(now())
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@unique([reservationId, eventType])
+  @@index([campaignId, eventType, createdAt])
+  @@index([campaignId, createdAt])
 }
 
 /**

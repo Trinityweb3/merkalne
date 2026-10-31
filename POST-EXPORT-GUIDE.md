@@ -182,6 +182,18 @@ bunx prisma migrate deploy         # apply committed migrations (PostgreSQL)
 # as before. Existing creatives keep their moderationStatus (approved ones
 # keep serving). `prisma migrate deploy` picks it up automatically on the
 # next docker compose up -d --build.
+# NOTE (ads Phase 3): migration 0013_ads_phase3_events adds the AdEvent
+# delivery log (loaded_impression / viewable_impression / valid_click,
+# UNIQUE (reservationId, eventType) as the exactly-once guard). Pure
+# additive DDL, no data transforms. BEHAVIOUR change (application logic,
+# not DDL): serving never charges anymore — both CPC and CPM serve into a
+# HELD BudgetReservation and the wallet is charged only by a validated
+# event (a click through the signed redirect route /api/ads/click/[token]
+# for CPC; a viewable-impression beacon on /api/ads/event for CPM, measured
+# client-side as ≥ 50 % visible for one continuous second in an active
+# tab). Holds that see no validating event within the 30-minute TTL expire
+# and the campaign budget recovers — existing FINALIZED rows keep their
+# status; nothing is re-billed.
 bun prisma/seed.ts                 # optional: reference dataset + demo accounts
 
 bun run dev                        # http://localhost:3000
@@ -250,6 +262,7 @@ unconfigured optional features (OAuth buttons, bots) instead of failing silently
 | 13l | `BLOCKBEE_COINS` | e.g. `polygon_usdt,polygon_usdc,sol` | Allowlist of BlockBee coin tickers offered for top-ups and payouts. Empty = the default set (USDT/USDC on Polygon, BSC and Arbitrum + SOL, BNB, POL). **TRON tickers are always rejected** (high fraud rate — policy, not overridable) | No |
 | 13m | `BLOCKBEE_MIN_PAYOUT_CENTS` | e.g. `2000` (= $20.00) | Minimum referral withdrawal in US cents | No (default 2000) |
 | 13n | *(none — Premium reuses 13j/13k)* | — | Premium/Premium+ subscriptions bill through the SAME BlockBee key and the SAME webhook (`/api/webhooks/blockbee` routes `prem_`/`premplus_` order ids to subscription activation, everything else to the ad wallet). No additional setup: once 13j is set, `/premium` offers live crypto checkout | — |
+| 13o | `ADS_EVENT_SECRET` | `openssl rand -base64 48` | Phase 3 event pipeline: HMAC secret signing the per-serve ad tokens that authenticate clicks on `/api/ads/click/[token]` and viewability beacons on `/api/ads/event`. Empty (default) = falls back to `AUTH_SECRET`, which is always strong in production — set this only to rotate ad tokens independently of sessions | No |
 
 > **Port note (`DB_HOST_PORT`)** — the compose file publishes the bundled PostgreSQL on `127.0.0.1:5433` by default (`127.0.0.1:${DB_HOST_PORT:-5433}:5432`). The 5433 default exists because a native PostgreSQL on the host typically already owns 5432 — starting the stack then aborts with `failed to bind host port … address already in use`. The container-internal port is always 5432 and the app connects as `db:5432` over the internal network, so this mapping only affects host-side access (`psql -h 127.0.0.1 -p 5433 -U merklane`). Override in `.env` (`DB_HOST_PORT=5432`) if your host port is free, or delete the `ports:` block for hardened deployments.
 
@@ -371,7 +384,7 @@ per language in the database. The active provider is shown on `/about`
 
 Two operator features ship in this build:
 
-**Ads (wallet-first).** The advertiser dashboard lives in the profile cabinet at `/profile/ads` (`/ads` redirects there; sign in required). Flow: deposit crypto in the **Wallet tab** → the confirmed deposit lands in the advertiser's wallet (`User.adBalance`) → create a campaign **funded from the wallet** (starts ACTIVE immediately; the budget must cover at least 50 views at the chosen bid, and the wallet must actually hold it — a conditional-decrement transaction guarantees no overdraft). Every served impression deducts the bid from the campaign balance (weighted-random auction: a 2¢ bid wins twice the share of a 1¢ bid) and a drained campaign auto-pauses. Campaigns can also target sections and interface languages (empty = everywhere).
+**Ads (Phase 3: event pipeline, viewability, anti-fraud, reporting).** The advertiser dashboard lives in the profile cabinet at `/profile/ads` (`/ads` redirects there; sign in required). Flow: deposit crypto in the **Wallet tab** → create a campaign in the 5-step wizard (Name & Format → Creative → Targeting → Bidding & Budget → Review) → *Submit for review* reserves the budget from the wallet (ledger `RESERVE`) → a moderator approves it in the Telegram admin bot (🛡 Moderation Queue) → the campaign serves. Billing is now **event-driven**: serving an ad only HOLDS budget (a `BudgetReservation`, 30-minute TTL) — the wallet is charged solely by a validated event: a **CPC click** goes through the signed redirect route `/api/ads/click/[token]` (HMAC token minted at serve time; 302 to the advertiser's destination), a **CPM viewable impression** fires only after the ad is ≥ 50 % visible for one continuous second in an active tab (IntersectionObserver + Page Visibility API in `<AdSlot/>`, beaconed to `/api/ads/event` and re-verified server-side against the token). Holds that never see a validating event expire and the budget recovers — nobody is charged for unviewable, unclicked serves. Deduplication is triple-guarded (conditional status flip, unique ledger `eventId`, UNIQUE `(reservationId, eventType)` on the `AdEvent` log), so double clicks and replayed beacons can never double-charge. Anti-fraud: known bots/crawlers get no ad at all and can never generate a billable event; the beacon endpoint is rate limited (30/min/IP). The **Reports** tab shows real per-campaign metrics (impressions, viewable impressions, clicks, CTR, spent, eCPC — an em dash whenever there is no data), with a formula-safe **Download CSV** export (leading `= + - @` neutralised). e2e: `bash scripts/run-ads-e2e.sh` (166 checks, wizard/moderation/targeting/billing) and `bash scripts/run-ads-events-e2e.sh` (116 checks — includes a real Chromium pass that measures the viewability delay, the active-tab pause and the click redirect).
 
 With `BLOCKBEE_API_KEY` set (the production path) the deposit modal shows a **coin picker** (stablecoins + majors on Solana, Polygon, BSC and Arbitrum — TRON is banned by policy), then a **BlockBee-hosted deposit address**. The IPN webhook at `/api/webhooks/blockbee` verifies the signature (RSA `x-ca-signature` and/or the HMAC `token`), matches `order_id` + per-intention nonce against the pending intention, and credits the wallet exactly once — the dashboard's status polling flips to "confirmed" automatically. Without a processor key the flow falls back to `manual` mode: a locally derived mock address is shown and an ADMIN confirms deposits after checking the wallet (`POST /api/admin/ads/topups/<id>/confirm`). For local demos set `ADS_TOPUP_MODE=simulate` and the advertiser sees a "Simulate payment" button instead.
 

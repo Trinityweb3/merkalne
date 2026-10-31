@@ -29,6 +29,7 @@ prisma/migrations/0009_premium_orders/migration.sql
 prisma/migrations/0010_team_members/migration.sql
 prisma/migrations/0011_ads_phase1_double_entry/migration.sql
 prisma/migrations/0012_ads_phase2_targeting_moderation/migration.sql
+prisma/migrations/0013_ads_phase3_events/migration.sql
 prisma/migrations/migration_lock.toml
 prisma/schema.prisma
 prisma/schema.sqlite.prisma
@@ -39,6 +40,7 @@ public/uploads/ads/03207731-6837-495d-a837-55f10eb2cfac.webp
 public/uploads/ads/04adebd4-663b-44a7-b1d2-acdafb888021.webp
 public/uploads/ads/0d686e64-4007-4fce-99d0-64ff36352746.png
 public/uploads/ads/1c51e91a-c825-46d5-9f2d-76264e82ae3c.png
+public/uploads/ads/41edfefa-cb4e-45d9-bcb8-169eabc1e575.webp
 public/uploads/ads/454de093-029a-44a7-b0b2-7030628e5949.png
 public/uploads/ads/65ceb30b-a8bf-47e3-8f7e-aebe75d0f0fc.png
 public/uploads/ads/73b6d9b2-36ce-413f-a4a4-4a58bf398e83.webp
@@ -46,6 +48,7 @@ public/uploads/ads/7e062f23-2366-4d3b-913e-67f8cf84ae81.png
 public/uploads/ads/7e7da4ae-5eb9-489e-b576-461f92cce723.webp
 public/uploads/ads/84ccf8db-21ad-43b7-9407-d6c0bece92b8.webp
 public/uploads/ads/869fd31e-50a8-4c69-acc7-5c6938e4ae70.png
+public/uploads/ads/9741994f-11ff-45ea-8d64-b162d84c8956.png
 public/uploads/ads/992b4a3b-8eb8-4070-be30-d6ba091b116e.png
 public/uploads/ads/README.txt
 public/uploads/ads/bf155fd0-474a-4fcb-85c9-ed739c9f9951.webp
@@ -68,6 +71,7 @@ scripts/premium-i18n-g3.mjs
 scripts/premium-i18n-g4.mjs
 scripts/run-admin-bot-e2e.sh
 scripts/run-ads-e2e.sh
+scripts/run-ads-events-e2e.sh
 scripts/run-blockbee-e2e.sh
 scripts/run-premium-e2e.sh
 scripts/run-regression.sh
@@ -79,6 +83,7 @@ scripts/sync-sqlite-schema.ts
 scripts/test-admin-bot-e2e.ts
 scripts/test-ads-auction.ts
 scripts/test-ads-e2e.ts
+scripts/test-ads-events-e2e.ts
 scripts/test-blockbee-e2e.ts
 scripts/test-llm-translation.ts
 scripts/test-post-split-regression.ts
@@ -103,6 +108,7 @@ scripts/ui18n-codegen/fr-de.ts
 scripts/ui18n-codegen/hi.ts
 scripts/ui18n-codegen/id.ts
 scripts/ui18n-codegen/inject-ads-phase1.ts
+scripts/ui18n-codegen/inject-ads-phase3.ts
 scripts/ui18n-codegen/inject-ads.ts
 scripts/ui18n-codegen/inject-blockbee.ts
 scripts/ui18n-codegen/inject.ts
@@ -154,7 +160,10 @@ src/app/api/admin/stats/route.ts
 src/app/api/ads/assets/upload/route.ts
 src/app/api/ads/campaigns/[id]/route.ts
 src/app/api/ads/campaigns/route.ts
-src/app/api/ads/click/route.ts
+src/app/api/ads/click/[token]/route.ts
+src/app/api/ads/event/route.ts
+src/app/api/ads/reports/export/route.ts
+src/app/api/ads/reports/route.ts
 src/app/api/ads/serve/route.ts
 src/app/api/ads/topups/[id]/route.ts
 src/app/api/ads/topups/[id]/simulate/route.ts
@@ -206,6 +215,7 @@ src/components/site/about-stats.tsx
 src/components/site/ads-waitlist.tsx
 src/components/site/ads/ad-slot.tsx
 src/components/site/ads/ads-dashboard.tsx
+src/components/site/ads/ads-reports.tsx
 src/components/site/ads/campaign-wizard.tsx
 src/components/site/alerts-manager.tsx
 src/components/site/article-body.tsx
@@ -308,11 +318,16 @@ src/i18n/navigation.ts
 src/i18n/request.ts
 src/i18n/routing.ts
 src/lib/about-content.ts
+src/lib/ads/antifraud.ts
 src/lib/ads/auction.ts
 src/lib/ads/blockbee.ts
+src/lib/ads/events.ts
 src/lib/ads/moderation.ts
 src/lib/ads/money.ts
+src/lib/ads/report-format.ts
+src/lib/ads/reporting.ts
 src/lib/ads/targeting.ts
+src/lib/ads/tokens.ts
 src/lib/ads/topup.ts
 src/lib/ads/wallet.ts
 src/lib/api-client.ts

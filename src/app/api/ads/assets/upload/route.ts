@@ -55,8 +55,8 @@ function sniffImageType(buf: Buffer): SniffedType | null {
  *   • CSRF double-submit + origin check (assertMutationSafe)
  *   • 12 uploads / minute / user
  *   • size cap 1.5 MB enforced before anything is stored
- *   • REAL content validation via magic-byte sniffing — the
- *     extension/MIME the client sent is ignored entirely, so a renamed .svg/.html/.exe is
+ *   • REAL content validation via magic bytes — the extension/MIME the
+ *     client sent is ignored entirely, so a renamed .svg/.html/.exe is
  *     rejected no matter what it calls itself; no SVG and no scripts are
  *     ever stored
  *   • the stored file name is a fresh server-generated UUID + the sniffed

@@ -116,6 +116,11 @@ const envSchema = z.object({
   // Seed for the deterministic deposit-address derivation (mock HD wallet,
   // manual/simulate fallback modes only).
   ADS_TOPUP_SEED: optionalStr,
+  // HMAC secret for the ads event pipeline (Phase 3): signs the click tokens
+  // embedded in served ads (/api/ads/click/[token]) and verified on every
+  // viewability beacon (/api/ads/event). Empty → falls back to AUTH_SECRET
+  // (exported as adsEventSecret below) so production always has a strong key.
+  ADS_EVENT_SECRET: optionalStr,
   // BlockBee payment processor (https://blockbee.io — formerly CryptAPI).
   // API key from the BlockBee dashboard. When set (and ADS_TOPUP_MODE is not
   // pinned to manual/simulate) ad top-ups run through BlockBee: the /create/
@@ -195,6 +200,15 @@ if (!env.AUTH_SECRET && !isProduction) {
 /** Deterministic-per-boot fallback so dev flows still work without config. */
 export const authSecret: string =
   env.AUTH_SECRET ?? `ephemeral-dev-secret-${process.pid}-${Date.now()}0123456789abcdef`
+
+/**
+ * HMAC secret for the ads event pipeline (Phase 3). Dedicated value when
+ * ADS_EVENT_SECRET is set; otherwise the session/CSRF secret (AUTH_SECRET —
+ * always present in production, see the boot assertions above). Tokens are
+ * only ever minted and verified server-side in the same deployment, so the
+ * fallback is as strong as AUTH_SECRET itself.
+ */
+export const adsEventSecret: string = env.ADS_EVENT_SECRET?.trim() || authSecret
 
 export const isProd = isProduction
 

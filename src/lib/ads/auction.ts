@@ -18,23 +18,44 @@
  * + interface languages (Phase 1), contextual keywords, hashtags and the
  * visitor country (Phase 2) — filters against the serving page.
  *
- * BILLING — every billable event is a BudgetReservation:
+ * BILLING — every billable event is a BudgetReservation (Phase 3: serving
+ * NEVER charges):
  *
- *   CPC: serve → reservation HELD for one bid (expires in 30 minutes).
- *        A valid click finalises it: the reservation flips to FINALIZED and
- *        the wallet is charged (LedgerEntry CHARGE). No click within 30
- *        minutes → the sweeper expires it and the campaign budget recovers.
- *   CPM: serve = the confirmed view (Phase 1 deliberately has no viewability
- *        measurement — that is a later phase). The reservation is created
- *        FINALIZED for bid/1000 and charged immediately.
+ *   Both models create the reservation HELD at serve time. The charge
+ *   happens only when a VALIDATED client event finalises it:
  *
- * CONCURRENCY (Phase 1 model, documented): eligibility is re-read before
- * every draw attempt, so a drained campaign stops being drawn. Two truly
- * concurrent serves can over-commit a campaign by at most one in-flight
- * event — the 30-minute expiry self-heals it, and no money can ever be
- * lost: every actual wallet movement goes through the conditional guards in
- * src/lib/ads/wallet.ts (available ≥ X / reserved ≥ X), and every ledger
- * posting is exactly-once via its unique eventId.
+ *   CPC: serve → HELD for one bid (30-minute window). The visitor's click
+ *        goes through the signed redirect route /api/ads/click/[token]:
+ *        HMAC-validated, logged as a valid_click AdEvent, THEN charged.
+ *        No valid click within 30 minutes → the sweeper expires the hold
+ *        and the campaign budget recovers (the advertiser pays nothing).
+ *   CPM: serve → HELD for bid/1000. <AdSlot/> measures viewability with the
+ *        IntersectionObserver + Page Visibility API and beacons
+ *        POST /api/ads/event after the ad has been ≥ 50 % visible for one
+ *        continuous second in an active tab; the route verifies the HMAC
+ *        token, logs the viewable_impression AdEvent and charges
+ *        bid/1000. No viewable impression within the TTL → the hold
+ *        expires, budget recovered, nothing charged.
+ *
+ *   Every serve also writes a loaded_impression AdEvent (server-side,
+ *   atomic with the reservation creation) and mints the HMAC ad token
+ *   that authenticates the later click/redirect and viewability beacon.
+ *
+ * DEDUPLICATION — a double click, a replayed beacon or a bot retrying the
+ *   event can never charge twice, by three independent guards: (1) the
+ *   conditional status flip below (held → finalized is atomic; the second
+ *   fire finds a non-HELD row and no-ops), (2) the unique ledger eventId
+ *   charge:<reservationId>, (3) the UNIQUE (reservationId, eventType) index
+ *   on AdEvent. The wallet itself only ever moves through the conditional
+ *   guards in src/lib/ads/wallet.ts (available ≥ X / reserved ≥ X).
+ *
+ * CONCURRENCY (Phase 1 model, kept): eligibility is re-read before every
+ *   draw attempt, so a drained campaign stops being drawn. Two truly
+ *   concurrent serves can over-commit a campaign by at most one in-flight
+ *   event per serve — the 30-minute expiry self-heals it, and no money can
+ *   ever be lost: every actual wallet movement goes through the conditional
+ *   guards in src/lib/ads/wallet.ts, and every ledger posting is
+ *   exactly-once via its unique eventId.
  */
 import { db } from '@/lib/db'
 import { env } from '@/lib/env'
@@ -42,6 +63,9 @@ import type { Campaign } from '@prisma/client'
 import { targetingMatches, type AdRequestContext } from '@/lib/ads/targeting'
 import { chargeReservation } from '@/lib/ads/wallet'
 import { perEventMicroUsd, type AdFormat, type BillingModel } from '@/lib/ads/money'
+import { signAdToken } from '@/lib/ads/tokens'
+import { logAdEvent } from '@/lib/ads/events'
+import { truncateUserAgent, hashVisitorIp } from '@/lib/ads/antifraud'
 
 export const AD_SLOT_IDS = ['home_banner', 'feed', 'article_bottom'] as const
 export type AdSlotId = (typeof AD_SLOT_IDS)[number]
@@ -251,8 +275,10 @@ function hostOf(url: string): string {
 
 export interface ServedAd {
   campaignId: string
-  /** The BudgetReservation id — the click beacon echoes it back. */
+  /** The BudgetReservation id — the hold this serve created. */
   reservationId: string
+  /** HMAC token authenticating the click redirect + viewability beacon. */
+  clickToken: string
   format: AdFormat
   billingModel: BillingModel
   title: string | null
@@ -268,12 +294,13 @@ export interface ServedAd {
 
 /**
  * Serve one ad for a slot: eligibility → 50/50 pool split → weighted draw →
- * the model's reservation flow. `ctx` carries the serving context (section +
- * locale); omit it to serve without targeting restrictions. Returns null
- * when ads are off, nothing is eligible, or every drawn campaign lost its
- * budget race (rare).
+ * a HELD BudgetReservation (never a charge — Phase 3) + the server-side
+ * loaded_impression event + the HMAC click/viewability token. `ctx` carries
+ * the serving context (targeting dimensions + visitor UA/IP for the event
+ * log); omit it to serve without targeting restrictions. Returns null when
+ * ads are off or nothing is eligible.
  */
-export async function serveAd(_slot: string, ctx: AdRequestContext = {}): Promise<ServedAd | null> {
+export async function serveAd(slot: string, ctx: AdRequestContext = {}): Promise<ServedAd | null> {
   if (!adsEnabled()) return null
   await expireStaleReservations()
 
@@ -332,45 +359,35 @@ export async function serveAd(_slot: string, ctx: AdRequestContext = {}): Promis
     const creative = drawn.campaign.creatives[0]
     const expiresAt = new Date(Date.now() + RESERVATION_TTL_MS)
 
-    if (drawn.billingModel === 'cpc') {
-      // Hold one bid. Single insert; if two concurrent serves over-commit,
-      // the extra hold expires in 30 minutes and never charges anything.
-      const reservation = await db.budgetReservation.create({
-        data: { campaignId: drawn.id, amountMicroUsd: drawn.perEvent, status: 'held', expiresAt },
-      })
-      return toServedAd(drawn.campaign, creative, reservation.id)
-    }
+    // Phase 3 — BOTH models hold at serve time, NOTHING is charged here.
+    // The charge lands only when a validated event finalises the hold (a
+    // valid click through the signed redirect route for CPC; a viewable
+    // impression beacon for CPM). Until then the hold just caps the
+    // campaign's derived budget; if two concurrent serves over-commit, the
+    // extra hold expires in 30 minutes and never charges anything.
+    const reservation = await db.budgetReservation.create({
+      data: { campaignId: drawn.id, amountMicroUsd: drawn.perEvent, status: 'held', expiresAt },
+    })
 
-    // CPM: the served impression IS the confirmed view (Phase 1) — the
-    // reservation is born FINALIZED and charged atomically. A failed wallet
-    // guard (never expected) rolls the reservation back and re-draws.
-    try {
-      const reservation = await db.$transaction(async (tx) => {
-        const r = await tx.budgetReservation.create({
-          data: { campaignId: drawn.id, amountMicroUsd: drawn.perEvent, status: 'finalized', expiresAt },
-        })
-        const charged = await chargeReservation(tx, {
-          userId: drawn.campaign.advertiserId,
-          campaignId: drawn.id,
-          reservationId: r.id,
-          amountMicroUsd: drawn.perEvent,
-        })
-        if (!charged.ok) throw new ChargeGuardFailed()
-        return r
-      })
-      return toServedAd(drawn.campaign, creative, reservation.id)
-    } catch (err) {
-      if (err instanceof ChargeGuardFailed) continue // re-draw
-      throw err
-    }
+    // The serve event itself: logged server-side, exactly once per hold.
+    // This is the "Impressions" line of the advertiser reports — it cannot
+    // be forged or missed by the client because the client is not involved.
+    await logAdEvent({
+      campaignId: drawn.id,
+      reservationId: reservation.id,
+      eventType: 'loaded_impression',
+      slot,
+      userAgent: truncateUserAgent(ctx.userAgent),
+      ipHash: hashVisitorIp(ctx.visitorIp),
+    })
+
+    return toServedAd(drawn.campaign, creative, {
+      reservationId: reservation.id,
+      slot,
+      expiresAt,
+    })
   }
   return null
-}
-
-class ChargeGuardFailed extends Error {
-  constructor() {
-    super('wallet charge guard refused')
-  }
 }
 
 function toServedAd(
@@ -383,53 +400,81 @@ function toServedAd(
     displayDomain: string | null
     targetUrl: string
   },
-  reservationId: string,
+  hold: { reservationId: string; slot: string; expiresAt: Date },
 ): ServedAd {
+  const billingModel = campaign.billingModel as BillingModel
   return {
     campaignId: campaign.id,
-    reservationId,
+    reservationId: hold.reservationId,
+    // The single signed token for this serve — it authenticates BOTH the
+    // click redirect (/api/ads/click/[token]) and the viewability beacon
+    // (POST /api/ads/event). exp == the reservation's 30-minute window:
+    // after it the token still redirects honestly but never charges.
+    clickToken: signAdToken({
+      r: hold.reservationId,
+      c: campaign.id,
+      m: billingModel,
+      u: creative.targetUrl,
+      s: hold.slot,
+      exp: hold.expiresAt.getTime(),
+    }),
     format: campaign.format as AdFormat,
-    billingModel: campaign.billingModel as BillingModel,
+    billingModel,
     title: creative?.title ?? null,
     body: creative?.body ?? null,
     imageUrl: creative?.imageUrl ?? null,
     altText: creative?.altText ?? null,
     targetUrl: creative.targetUrl,
     // The advertiser's friendly display domain wins; the real destination
-    // host is the fallback (and the href always stays the honest targetUrl).
+    // host is the fallback (and the redirect always goes to the honest
+    // signed targetUrl — never to the display domain).
     targetHost: creative?.displayDomain?.trim() || hostOf(creative.targetUrl),
     bidMicroUsd: campaign.bidMicroUsd,
   }
 }
 
 // ---------------------------------------------------------------------------
-// Clicks (the only CPC billing event)
+// Billing events — the ONLY places a wallet charge can ever happen
 // ---------------------------------------------------------------------------
 
 /**
- * A valid click on a served CPC ad: the reservation must still be HELD and
- * inside its 30-minute window. The status flip is conditional, so double
- * fires / replays settle to a single charge; the unique eventId
- * `charge:<reservationId>` is the second line of defence. CPM reservations
- * are born FINALIZED, so a CPM click beacon is a harmless no-op.
+ * Finalise a HELD reservation: conditional status flip (held → finalized
+ * inside the 30-minute window) followed by the wallet charge, in ONE
+ * transaction. Double fires / replays settle to a single charge: the second
+ * caller finds the row non-HELD and gets not_held; the unique ledger
+ * eventId `charge:<reservationId>` is the second line of defence.
  */
-export async function finalizeClick(
+async function finalizeHeld(
   reservationId: string,
-): Promise<{ ok: true; chargedMicroUsd: number } | { ok: false; reason: 'not_held' | 'invariant_broken' }> {
+  expectedModel: BillingModel,
+): Promise<
+  | { ok: true; chargedMicroUsd: number }
+  | { ok: false; reason: 'not_held' | 'wrong_model' | 'invariant_broken' }
+> {
   const now = new Date()
   try {
     return await db.$transaction(async (tx) => {
+      const reservation = await tx.budgetReservation.findUnique({ where: { id: reservationId } })
+      if (!reservation) return { ok: false as const, reason: 'not_held' as const }
+      const campaign = await tx.campaign.findUnique({
+        where: { id: reservation.campaignId },
+        select: { advertiserId: true, billingModel: true },
+      })
+      if (!campaign) return { ok: false as const, reason: 'not_held' as const }
+
+      // Defence in depth: the signed ad token already says which billing
+      // model this event is billable for — the database must agree before
+      // any money moves (a CPM view can never charge a CPC campaign and
+      // vice versa, whatever a crafted token claims).
+      if ((campaign.billingModel as BillingModel) !== expectedModel) {
+        return { ok: false as const, reason: 'wrong_model' as const }
+      }
+
       const flip = await tx.budgetReservation.updateMany({
         where: { id: reservationId, status: 'held', expiresAt: { gt: now } },
         data: { status: 'finalized' },
       })
       if (flip.count !== 1) return { ok: false as const, reason: 'not_held' as const }
-
-      const reservation = await tx.budgetReservation.findUnique({ where: { id: reservationId } })
-      const campaign = reservation
-        ? await tx.campaign.findUnique({ where: { id: reservation.campaignId }, select: { advertiserId: true } })
-        : null
-      if (!reservation || !campaign) return { ok: false as const, reason: 'not_held' as const }
 
       const charged = await chargeReservation(tx, {
         userId: campaign.advertiserId,
@@ -437,12 +482,43 @@ export async function finalizeClick(
         reservationId: reservation.id,
         amountMicroUsd: reservation.amountMicroUsd,
       })
-      if (!charged.ok) throw new Error('ledger invariant broken while charging a click')
+      if (!charged.ok) throw new Error('ledger invariant broken while charging a billing event')
       return { ok: true as const, chargedMicroUsd: reservation.amountMicroUsd }
     })
   } catch {
     return { ok: false, reason: 'invariant_broken' }
   }
+}
+
+/**
+ * A valid click on a served CPC ad (the only CPC billing event). Called by
+ * the signed redirect route /api/ads/click/[token] AFTER the token's HMAC
+ * and expiry were verified. A CPM reservation handed here is refused
+ * (wrong_model): CPM bills views, never clicks.
+ */
+export async function finalizeClick(
+  reservationId: string,
+): Promise<
+  | { ok: true; chargedMicroUsd: number }
+  | { ok: false; reason: 'not_held' | 'wrong_model' | 'invariant_broken' }
+> {
+  return finalizeHeld(reservationId, 'cpc')
+}
+
+/**
+ * A valid viewable impression on a served CPM ad (the only CPM billing
+ * event). Called by the event route /api/ads/event after <AdSlot/> measured
+ * ≥ 50 % visibility for one continuous second in an active tab and the
+ * token's HMAC + expiry were verified. A CPC reservation handed here is
+ * refused (wrong_model): CPC bills clicks, never views.
+ */
+export async function finalizeView(
+  reservationId: string,
+): Promise<
+  | { ok: true; chargedMicroUsd: number }
+  | { ok: false; reason: 'not_held' | 'wrong_model' | 'invariant_broken' }
+> {
+  return finalizeHeld(reservationId, 'cpm')
 }
 
 // ---------------------------------------------------------------------------

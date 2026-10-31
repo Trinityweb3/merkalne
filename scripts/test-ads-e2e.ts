@@ -7,7 +7,8 @@
  *   (free — no wallet money locked) → submit for review reserves the budget
  *   (RESERVE ledger row) → moderation via the REAL admin-bot webhook
  *   (🛡 Moderation Queue: list → preview → ✅ approve / ❌ reject with a
- *   reason) → ACTIVE → serve/click/billing (Phase 1 logic, unchanged) →
+ *   reason) → ACTIVE → serve / signed-click-redirect / viewability-beacon
+ *   billing (Phase 3 semantics: serving holds, a validated event charges) →
  *   banner upload (magic bytes, 1.5 MB cap) → keyword/hashtag/country
  *   targeting → content edit appends a creative revision and sends the
  *   campaign back to PENDING → re-approval → delete (REFUND).
@@ -17,9 +18,9 @@
  *
  * The test seeds its own users + sessions + csrf cookie directly in the
  * database (sqlite), then talks HTTP only — plus white-box reads of the
- * reservation/ledger tables through the same Prisma client. The moderation
- * steps POST Telegram updates to /api/webhooks/telegram-admin (console
- * fallback transport — no bot token needed).
+ * reservation/ledger/event tables through the same Prisma client. The
+ * moderation steps POST Telegram updates to /api/webhooks/telegram-admin
+ * (console-fallback transport — no bot token needed).
  *
  * Run via: bash scripts/run-ads-e2e.sh  (spawns the dev server on :3103)
  */
@@ -437,9 +438,16 @@ async function main(): Promise<void> {
   check(served.status === 200 && served.data?.ad?.campaignId === campaignId, 'serve returns the active campaign')
   const reservationId = served.data?.ad?.reservationId as string
   check(typeof reservationId === 'string' && reservationId.length > 0, 'reservation id issued')
+  check(typeof served.data?.ad?.clickToken === 'string' && served.data.ad.clickToken.length > 24, 'Phase 3: serve mints the HMAC click token')
   check(served.data?.ad?.format === 'text', 'ad format is text')
   check(served.data?.ad?.billingModel === 'cpc', 'ad billing model echoed')
   check(served.data?.ad?.targetHost === 'acme.example', 'target host extracted for the card')
+
+  const servedEvent = await db.adEvent.findFirst({ where: { reservationId } })
+  check(
+    servedEvent?.eventType === 'loaded_impression' && servedEvent.slot === 'feed',
+    'Phase 3: serve logs the loaded_impression AdEvent (slot recorded)',
+  )
 
   const heldRow = await db.budgetReservation.findUnique({ where: { id: reservationId } })
   check(heldRow?.status === 'held' && heldRow?.amountMicroUsd === 500_000, 'DB: reservation HELD for one bid (500,000 µUSD)')
@@ -458,16 +466,17 @@ async function main(): Promise<void> {
   check(campaign?.budget?.remainingMicroUsd === 9_500_000, `remaining = committed − spent − held (got ${campaign?.budget?.remainingMicroUsd})`)
   check(campaign?.stats?.served === 1, `served count 1 (got ${campaign?.stats?.served})`)
 
-  console.log('— 8. click: hold finalised, wallet charged —')
-  const badClick = await call('/api/ads/click', { method: 'POST', body: { reservationId: 'nonexistent' }, ip: '10.20.0.2' })
-  check(badClick.data?.recorded === false, 'click on unknown reservation ignored')
+  console.log('— 8. click via the signed redirect route: hold finalised, wallet charged —')
+  const badClick = await call('/api/ads/click/not-a-real-token-at-all-1234', { ip: '10.20.0.2' })
+  check(badClick.status === 400, 'forged ad token → 400, never a redirect')
 
-  const click = await call('/api/ads/click', { method: 'POST', body: { reservationId }, ip: '10.20.0.2' })
-  check(click.data?.recorded === true, 'valid click recorded')
-  check(click.data?.chargedMicroUsd === 500_000, 'click charged one bid (500,000 µUSD)')
-
-  const clickAgain = await call('/api/ads/click', { method: 'POST', body: { reservationId }, ip: '10.20.0.2' })
-  check(clickAgain.data?.recorded === false, 'double click on the same reservation is a no-op')
+  const clickToken = served.data?.ad?.clickToken as string
+  const clickRes = await fetch(`${ORIGIN}/api/ads/click/${encodeURIComponent(clickToken)}`, {
+    headers: { 'X-Forwarded-For': '10.20.0.2', 'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AdsE2E' },
+    redirect: 'manual',
+  })
+  check(clickRes.status === 302, `valid click → 302 through the redirect route (got ${clickRes.status})`)
+  check((clickRes.headers.get('location') ?? '') === 'https://acme.example', 'redirect Location is the signed destination')
 
   const chargedWallet = await wallet()
   check(chargedWallet.reserved === 9_500_000, `wallet reserved dropped to 9,500,000 µUSD (got ${chargedWallet.reserved})`)
@@ -476,6 +485,17 @@ async function main(): Promise<void> {
     chargeRow?.type === 'charge' && chargeRow?.amountMicroUsd === -500_000,
     'ledger shows the CHARGE row (eventId charge:<rid>, −500,000 µUSD)',
   )
+  const clickEvent = await db.adEvent.findFirst({ where: { reservationId, eventType: 'valid_click' } })
+  check(Boolean(clickEvent), 'AdEvent: valid_click logged')
+
+  const clickAgain = await fetch(`${ORIGIN}/api/ads/click/${encodeURIComponent(clickToken)}`, {
+    headers: { 'X-Forwarded-For': '10.20.0.2', 'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AdsE2E' },
+    redirect: 'manual',
+  })
+  check(clickAgain.status === 302, 'double click still redirects (good UX)')
+  const stillCharged = await wallet()
+  check(stillCharged.reserved === 9_500_000, 'double click is a no-op — no second charge')
+  check((await db.adEvent.count({ where: { reservationId, eventType: 'valid_click' } })) === 1, 'no duplicate valid_click row')
 
   list = await call('/api/ads/campaigns')
   campaign = list.data?.campaigns?.find((c: any) => c.id === campaignId)
@@ -498,8 +518,15 @@ async function main(): Promise<void> {
   const sweptRow = await db.budgetReservation.findUnique({ where: { id: rid2 } })
   check(sweptRow?.status === 'expired', 'DB: reservation flipped to expired by the sweeper')
 
-  const lateClick = await call('/api/ads/click', { method: 'POST', body: { reservationId: rid2 }, ip: '10.20.0.4' })
-  check(lateClick.data?.recorded === false, 'click on an expired hold is rejected (not a valid click)')
+  const lateClickToken = served2.data?.ad?.clickToken as string
+  const lateClickRes = await fetch(`${ORIGIN}/api/ads/click/${encodeURIComponent(lateClickToken)}`, {
+    headers: { 'X-Forwarded-For': '10.20.0.4', 'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AdsE2E' },
+    redirect: 'manual',
+  })
+  check(lateClickRes.status === 302, 'click on an expired hold still redirects')
+  check((await db.adEvent.count({ where: { reservationId: rid2, eventType: 'valid_click' } })) === 0, 'expired hold click is NOT a valid click (no event, no charge)')
+  const afterLateClick = await wallet()
+  check(afterLateClick.reserved === 9_500_000, 'expired hold click charges nothing')
 
   console.log('— 10. uploaded banner campaign (CPM) + moderation + daily cap —')
   // $50 CPM → 50,000 µUSD per view; the $1.00 daily cap admits exactly
@@ -561,14 +588,16 @@ async function main(): Promise<void> {
 
   let cpmServed = 0
   let sawBanner = false
+  const cpmTokens: string[] = []
   for (let i = 0; i < 21; i++) {
     const s = await call('/api/ads/serve?slot=feed', { ip: `10.21.0.${i + 1}` })
     if (s.status === 200) {
       cpmServed++
+      if (s.data?.ad?.clickToken) cpmTokens.push(s.data.ad.clickToken)
       if (s.data?.ad?.format === 'banner' && String(s.data?.ad?.imageUrl ?? '').startsWith('/uploads/ads/')) sawBanner = true
     }
   }
-  check(cpmServed === 20, `exactly 20 views charged before the daily cap (got ${cpmServed})`)
+  check(cpmServed === 20, `exactly 20 serves admitted before the daily cap (got ${cpmServed})`)
   check(sawBanner, 'served ad carries the uploaded banner creative (local /uploads/ads/ path)')
   const serveBanner = await call('/api/ads/serve?slot=feed&country=DE', { ip: '10.21.9.9' })
   check(
@@ -576,15 +605,65 @@ async function main(): Promise<void> {
     'banner alt text carried through the serve API',
   )
 
+  // Phase 3: serving a CPM ad holds, never charges — all 20 rows HELD and
+  // the wallet completely untouched until the viewability events land.
+  check(
+    (await db.budgetReservation.count({ where: { campaignId: cpmId, status: 'held' } })) === 20,
+    'DB: all 20 CPM reservations HELD (no charge at serve time)',
+  )
+  const preViewWallet = await wallet()
+  check(preViewWallet.reserved === 19_500_000, `wallet untouched while the CPM holds are in flight (got ${preViewWallet.reserved})`)
+  check(
+    (await db.adEvent.count({ where: { campaignId: cpmId, eventType: 'loaded_impression' } })) === 20,
+    'AdEvent: 20 loaded_impression rows for the CPM campaign',
+  )
+
+  // Fire the 20 viewability beacons — one valid viewable_impression per
+  // reservation is the ONLY CPM billing event.
+  let viewEvents = 0
+  for (const tok of cpmTokens) {
+    const r = await fetch(`${ORIGIN}/api/ads/event`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Origin: ORIGIN,
+        'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AdsE2E',
+        'X-Forwarded-For': '10.21.5.1',
+      },
+      body: JSON.stringify({ token: tok, type: 'viewable_impression' }),
+    })
+    const body = (await r.json().catch(() => null)) as { data?: { recorded?: boolean } } | null
+    if (r.status === 200 && body?.data?.recorded === true) viewEvents++
+  }
+  check(viewEvents === 20, `20 viewable_impression events charged (got ${viewEvents})`)
+
+  // A replayed beacon (double render / bot retry) is an idempotent no-op.
+  const replay = await fetch(`${ORIGIN}/api/ads/event`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Origin: ORIGIN,
+      'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AdsE2E',
+      'X-Forwarded-For': '10.21.5.2',
+    },
+    body: JSON.stringify({ token: cpmTokens[0], type: 'viewable_impression' }),
+  })
+  const replayBody = (await replay.json().catch(() => null)) as { data?: { recorded?: boolean; reason?: string } } | null
+  check(replayBody?.data?.recorded === false, 'replayed viewability beacon → recorded:false (no double charge)')
+
   list = await call('/api/ads/campaigns')
   const cpmCampaign = list.data?.campaigns?.find((c: any) => c.id === cpmId)
   check(cpmCampaign?.stats?.views === 20, `20 views recorded (got ${cpmCampaign?.stats?.views})`)
   check(cpmCampaign?.budget?.spentMicroUsd === 1_000_000, `spent 20 × 50,000 = 1,000,000 µUSD (got ${cpmCampaign?.budget?.spentMicroUsd})`)
   check(cpmCampaign?.budget?.spentTodayMicroUsd === 1_000_000, 'daily spend counter at the cap')
   check(cpmCampaign?.budget?.remainingMicroUsd === 9_000_000, 'total budget still has $9 left — only the DAY is capped')
-  // CPM reservations are born FINALISED (Phase 1: serve = confirmed view).
+  // CPM reservations are HELD at serve and FINALIZED by the view event.
   const cpmRes = await db.budgetReservation.findFirst({ where: { campaignId: cpmId } })
-  check(cpmRes?.status === 'finalized' && cpmRes?.amountMicroUsd === 50_000, 'DB: CPM reservation born FINALIZED at 50,000 µUSD/view')
+  check(cpmRes?.status === 'finalized' && cpmRes?.amountMicroUsd === 50_000, 'DB: CPM reservation FINALIZED by the view event at 50,000 µUSD/view')
+  check(
+    (await db.adEvent.count({ where: { campaignId: cpmId, eventType: 'viewable_impression' } })) === 20,
+    'AdEvent: 20 viewable_impression rows (no duplicates)',
+  )
 
   const cpmWallet = await wallet()
   // reserved = c1 (10M) + c2 (10M) − the 20 CPM charges (1M)
@@ -754,14 +833,20 @@ async function main(): Promise<void> {
   for (let i = 0; i < 22; i++) {
     const s = await call('/api/ads/serve?slot=feed', { ip: `10.23.${Math.floor(i / 20)}.${(i % 20) + 1}` })
     if (s.status !== 200) break
-    const c = await call('/api/ads/click', {
-      method: 'POST',
-      body: { reservationId: s.data.ad.reservationId },
-      ip: `10.24.${Math.floor(i / 20)}.${(i % 20) + 1}`,
+    const c = await fetch(`${ORIGIN}/api/ads/click/${encodeURIComponent(s.data.ad.clickToken)}`, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AdsE2E',
+        'X-Forwarded-For': `10.24.${Math.floor(i / 20)}.${(i % 20) + 1}`,
+      },
+      redirect: 'manual',
     })
-    if (c.data?.recorded === true) drainClicks++
+    if (c.status === 302) drainClicks++
   }
   check(drainClicks === 20, `exactly 20 clicks charged before drain (got ${drainClicks})`)
+  check(
+    (await db.ledgerEntry.count({ where: { campaignId: drainId, type: 'charge' } })) === 20,
+    'exactly 20 CHARGE ledger rows for the drain campaign (one per valid click)',
+  )
 
   list = await call('/api/ads/campaigns')
   const drained = list.data?.campaigns?.find((c: any) => c.id === drainId)
