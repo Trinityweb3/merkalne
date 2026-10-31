@@ -31,6 +31,7 @@ import type { Prisma, Campaign, Creative } from '@prisma/client'
 import { reserveCampaignBudget } from '@/lib/ads/wallet'
 import { campaignBudgetStates } from '@/lib/ads/auction'
 import { formatMicroUsd, type BillingModel } from '@/lib/ads/money'
+import { logAdminAction, resolveTelegramAdminActor } from '@/lib/ads/audit'
 
 /** Min/max characters for a rejection reason (shared by API + bot). */
 export const REJECT_REASON_MIN = 3
@@ -152,6 +153,19 @@ export async function submitCampaignForReview(
 // Moderation decisions (Telegram admin bot)
 // ---------------------------------------------------------------------------
 
+/**
+ * Resolve the moderation caller's actor string ("tg-admin:<id>" from the
+ * Telegram admin bot, or a platform user id from the future web UI) into
+ * the AuditLog actor: the linked platform account when one exists, the
+ * honest bot label otherwise.
+ */
+async function auditActorFor(actor: string): Promise<{ actorId: string; actorLabel: string | null }> {
+  if (actor.startsWith('tg-admin:')) {
+    return resolveTelegramAdminActor(actor.slice('tg-admin:'.length))
+  }
+  return { actorId: actor, actorLabel: null }
+}
+
 /** PENDING → ACTIVE; every pending creative revision becomes APPROVED. */
 export async function approveCampaign(campaignId: string, actor: string): Promise<ModerationAction> {
   const result = await db.$transaction(async (tx) => {
@@ -178,6 +192,17 @@ export async function approveCampaign(campaignId: string, actor: string): Promis
   await db.ingestionLog
     .create({ data: { source: 'telegram', action: 'ads-approve', actor, detail: `${result.id} · ${result.name}` } })
     .catch(() => undefined)
+
+  // Phase 4 — the accountability trail: every approve lands in the AuditLog
+  // (best-effort; the IngestionLog row above is the fallback record).
+  const auditActor = await auditActorFor(actor)
+  await logAdminAction({
+    actorId: auditActor.actorId,
+    actorLabel: auditActor.actorLabel,
+    action: 'APPROVE_CAMPAIGN',
+    targetId: campaignId,
+    reason: `Approved "${result.name}" — the campaign went live`,
+  })
   return { ok: true, campaignId, status: 'active' }
 }
 
@@ -220,6 +245,18 @@ export async function rejectCampaign(
   await db.ingestionLog
     .create({ data: { source: 'telegram', action: 'ads-reject', ok: false, actor, detail: `${result.id} · ${result.name}` } })
     .catch(() => undefined)
+
+  // Phase 4 — the accountability trail: the reject REASON the advertiser
+  // sees in their dashboard is stored verbatim in the AuditLog, together
+  // with who rejected the campaign.
+  const auditActor = await auditActorFor(actor)
+  await logAdminAction({
+    actorId: auditActor.actorId,
+    actorLabel: auditActor.actorLabel,
+    action: 'REJECT_CAMPAIGN',
+    targetId: campaignId,
+    reason: clean,
+  })
   return { ok: true, campaignId, status: 'rejected' }
 }
 

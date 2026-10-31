@@ -40,6 +40,10 @@ export interface LogAdEventInput {
   userAgent?: string | null
   /** Salted hash prefix, never the raw IP (antifraud.hashVisitorIp). */
   ipHash?: string | null
+  /** Phase-4 forecasting: the serving page's section slug (serve-time only). */
+  section?: string | null
+  /** Phase-4 forecasting: the serving page's interface locale (serve-time only). */
+  locale?: string | null
 }
 
 export type LogAdEventResult =
@@ -64,6 +68,8 @@ export async function logAdEvent(input: LogAdEventInput): Promise<LogAdEventResu
         slot: input.slot ?? null,
         userAgent: input.userAgent ?? null,
         ipHash: input.ipHash ?? null,
+        section: input.section ?? null,
+        locale: input.locale ?? null,
       },
     })
     return { ok: true, duplicate: false }

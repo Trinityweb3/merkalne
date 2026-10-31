@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import {
   ArrowLeft,
@@ -11,12 +11,14 @@ import {
   Save,
   Send,
   Target,
+  TrendingUp,
   Trash2,
   X,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
+import { api } from '@/lib/api-client'
 import { LANGUAGES, POST_SECTIONS, SECTION_META } from '@/lib/constants'
 import {
   BID_BOUNDS,
@@ -256,6 +258,49 @@ export function CampaignWizard({
       ? (campaign.dailyBudgetMicroUsd / 1_000_000).toFixed(2)
       : '0',
   )
+
+  // Phase 4 — the delivery forecast of Step 4 (Bidding & Budget): what the
+  // campaign can expect per day, estimated from the last 7 days of REAL
+  // loaded_impression delivery filtered by the Step-3 targeting selections
+  // (sections + locales). Refetched (debounced) whenever those selections
+  // change while Step 4 is open.
+  const [forecast, setForecast] = useState<
+    | { state: 'loading' }
+    | { state: 'error'; message: string }
+    | {
+        state: 'ready'
+        sufficient: boolean
+        platformImpressions: number
+        dailyImpressions: { low: number; high: number } | null
+        dailyClicks: { low: number; high: number } | null
+      }
+  >({ state: 'loading' })
+
+  useEffect(() => {
+    if (step !== 4) return
+    setForecast({ state: 'loading' })
+    const timer = setTimeout(async () => {
+      const params = new URLSearchParams()
+      if (sections.length > 0) params.set('sections', sections.join(','))
+      if (locales.length > 0) params.set('locales', locales.join(','))
+      try {
+        const data = await api<{
+          sufficient: boolean
+          platformImpressions: number
+          dailyImpressions: { low: number; high: number } | null
+          dailyClicks: { low: number; high: number } | null
+        }>(`/api/ads/forecast${params.size > 0 ? `?${params.toString()}` : ''}`)
+        setForecast({ state: 'ready', ...data })
+      } catch (err) {
+        setForecast({
+          state: 'error',
+          message: err instanceof Error ? err.message : t('errorGeneric'),
+        })
+      }
+    }, 400)
+    return () => clearTimeout(timer)
+    // sections/locales are the Step-3 selections the forecast filters by.
+  }, [step, sections, locales, t])
 
   // Derived flags
   const editingFunded = mode === 'edit' && campaign?.status !== 'draft' // budget is locked
@@ -1037,6 +1082,63 @@ export function CampaignWizard({
                   style={{ marginTop: 8 }}
                 />
                 <small className="muted">{t('dailyBudgetHint')}</small>
+              </div>
+
+              {/* Phase 4 — the delivery forecast box: what this campaign can
+                  expect per day, from the last 7 days of real delivery
+                  filtered by the Step-3 targeting (sections + languages).
+                  The honest fallback — "Insufficient data to forecast" — is
+                  shown until the platform has ≥ 1000 impressions in the
+                  window; never an invented number. */}
+              <div
+                className="field span-2"
+                style={{ marginTop: 4, padding: 14, border: '1px dashed var(--chart-4, #8b9dc3)', borderRadius: 10 }}
+              >
+                <label className="field-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <TrendingUp width={15} height={15} aria-hidden />
+                  {t('forecastTitle')}
+                </label>
+                {forecast.state === 'loading' ? (
+                  <p className="muted small" style={{ marginTop: 6, display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <Loader2 width={14} height={14} className="animate-spin" aria-hidden />
+                    {t('forecastLoading')}
+                  </p>
+                ) : forecast.state === 'error' ? (
+                  <p className="muted small" style={{ marginTop: 6 }}>
+                    {forecast.message}
+                  </p>
+                ) : !forecast.sufficient ? (
+                  <div style={{ marginTop: 6 }}>
+                    <p className="small">
+                      <strong>{t('forecastInsufficient')}</strong>
+                    </p>
+                    <p className="muted tiny" style={{ marginTop: 4 }}>
+                      {t('forecastInsufficientHint')}
+                    </p>
+                  </div>
+                ) : (
+                  <div style={{ marginTop: 6 }}>
+                    <p className="small">
+                      <strong>
+                        {forecast.dailyImpressions
+                          ? t('forecastImpressions', {
+                              low: forecast.dailyImpressions.low,
+                              high: forecast.dailyImpressions.high,
+                            })
+                          : '—'}
+                      </strong>
+                      {forecast.dailyClicks
+                        ? ` · ${t('forecastClicks', {
+                            low: forecast.dailyClicks.low,
+                            high: forecast.dailyClicks.high,
+                          })}`
+                        : ''}
+                    </p>
+                    <p className="muted tiny" style={{ marginTop: 4 }}>
+                      {t('forecastNote', { days: 7 })}
+                    </p>
+                  </div>
+                )}
               </div>
             </div>
           ) : null}

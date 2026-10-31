@@ -32,6 +32,16 @@ model User {
   image         String?
   /// "user" | "admin" — server-side authorisation only, never client supplied
   role          String    @default("user")
+  /// Phase-4 granular permission tier (applies to the ads workspace and the
+  /// admin surfaces): "owner" | "editor" | "analyst" | "billing".
+  ///   owner   — everything (the default for every existing account, so the
+  ///             Phase-4 gates change nobody's behaviour until a role is
+  ///             deliberately demoted by an owner admin)
+  ///   editor  — campaign management (create/edit/budget/experiments) + reports
+  ///   analyst — reports only (read-only delivery statistics)
+  ///   billing — wallet/top-up administration only
+  /// Enforced server-side in src/lib/ads/permissions.ts — never client supplied.
+  adminRole     String    @default("owner")
   /// "free" | "premium" — premium unlocks job-alert dispatch (bots worker)
   plan          String    @default("free")
   /// While set in the future the premium plan is active (null = never expires)
@@ -621,6 +631,7 @@ model Campaign {
   creatives    Creative[]
   reservations BudgetReservation[]
   adEvents     AdEvent[]
+  experiments  Experiment[]
 
   @@index([status, deletedAt])
   @@index([advertiserId, createdAt])
@@ -710,6 +721,14 @@ model BudgetReservation {
   status         String
   /// When an unclicked CPC hold releases the budget back to the campaign.
   expiresAt      DateTime
+  /// Phase-4 A/B testing: "A" | "B" when this serve was delivered through
+  /// a RUNNING Experiment — the per-variant attribution stamp behind the
+  /// experiment statistics (impressions/clicks/CTR/eCPC per variant are
+  /// derived by joining AdEvent → BudgetReservation.variantId). Null for
+  /// every ordinary serve (no experiment) and for serves whose variant
+  /// creative fell out of APPROVED mid-flight (fallback to the latest
+  /// approved creative, honest null).
+  variantId      String?
   createdAt      DateTime  @default(now())
 
   campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
@@ -756,6 +775,14 @@ model AdEvent {
   eventType     String
   /// Placement id ("home_banner" | "feed" | "article_bottom").
   slot          String?
+  /// Phase-4 forecasting: the section slug of the serving page
+  /// ("intern-junior", …), stored on the loaded_impression row. Null on the
+  /// click/viewability events (the signed token carries no page context)
+  /// and on serves without a section context.
+  section       String?
+  /// Phase-4 forecasting: the interface locale of the serving page ("en",
+  /// "ru", …) — same storage rules as section.
+  locale        String?
   /// Truncated User-Agent of the visitor (anti-fraud analytics).
   userAgent     String?
   /// Salted SHA-256 prefix of the visitor IP — anonymised, never raw.
@@ -767,6 +794,120 @@ model AdEvent {
   @@unique([reservationId, eventType])
   @@index([campaignId, eventType, createdAt])
   @@index([campaignId, createdAt])
+}
+
+/**
+ * Phase-4 A/B testing — ONE experiment per campaign at a time.
+ *
+ * An experiment compares exactly two APPROVED creatives (Variant A and
+ * Variant B) of the same campaign:
+ *
+ *   • the campaign keeps a SINGLE weight in the auction — the eligibility
+ *     loop and the weighted draw are untouched; the variant is chosen only
+ *     AFTER the campaign wins (src/lib/ads/auction.ts), so an A/B campaign
+ *     never doubles its win probability;
+ *   • the split is 50/50 by a STABLE HASH of the visitor id
+ *     (sha256(experimentId | visitorId), first byte mod 2) — the same
+ *     visitor always sees the same variant (src/lib/ads/experiments.ts);
+ *   • every assignment is persisted in VariantAssignment (the audit trail
+ *     behind "the same user saw B twice" checks) and every serve stamps the
+ *     chosen variant on its BudgetReservation (variantId) — the statistics
+ *     (impressions, clicks, CTR, eCPC per variant + the two-proportion
+ *     z-test on CTR) derive from that join, never from client claims.
+ *
+ * status: "draft" (created / paused) | "running" | "finished".
+ * Pause moves RUNNING → DRAFT (startedAt is preserved so a resumed test
+ * keeps its original start); FINISHED is terminal, endedAt is set, and the
+ * campaign serves its latest approved creative again.
+ *
+ * primaryMetric: the metric the significance test is run on — "ctr" (the
+ * only supported value today; the column exists so future metrics do not
+ * need a migration).
+ */
+model Experiment {
+  id            String    @id @default(cuid())
+  campaignId    String
+  /// Variant A creative id — must belong to the campaign and be APPROVED.
+  creativeAId   String
+  /// Variant B creative id — must differ from A and be APPROVED.
+  creativeBId   String
+  /// "draft" | "running" | "finished"
+  status        String    @default("draft")
+  /// "ctr" — the metric the z-test evaluates.
+  primaryMetric String    @default("ctr")
+  /// Set on the first start; preserved across pause/resume.
+  startedAt     DateTime?
+  /// Set when the experiment is finished (terminal).
+  endedAt       DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  campaign    Campaign            @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  assignments VariantAssignment[]
+
+  @@index([campaignId, status])
+}
+
+/**
+ * Phase-4 A/B testing — the per-visitor split ledger. One row per visitor
+ * per experiment (@@unique(experimentId, visitorId)): the FIRST serve for a
+ * visitor fixes their variant (the stable hash guarantees every later serve
+ * computes the same answer — the row is the durable proof, not the source
+ * of truth). visitorId is the salted HMAC of IP+User-Agent minted by the
+ * serve route (src/lib/ads/antifraud.ts visitorStableId) — never a raw IP.
+ */
+model VariantAssignment {
+  id           String   @id @default(cuid())
+  experimentId String
+  /// Salted visitor fingerprint (same derivation as AdEvent.ipHash inputs).
+  visitorId    String
+  /// "A" | "B"
+  variantId    String
+  assignedAt   DateTime @default(now())
+
+  experiment Experiment @relation(fields: [experimentId], references: [id], onDelete: Cascade)
+
+  @@unique([experimentId, visitorId])
+  @@index([experimentId, variantId])
+}
+
+/**
+ * Phase-4 admin accountability — who did what, when, and why.
+ *
+ * One row per ADMIN ACTION (approve/reject a campaign from the Telegram
+ * admin bot, confirm a manual deposit / adjust a balance, grant/revoke
+ * premium, change a user's permission role). Written best-effort by
+ * src/lib/ads/audit.ts from EVERY moderation and balance path — a failed
+ * audit write never blocks the action itself (the IngestionLog keeps its
+ * own copy of the same events).
+ *
+ *   actorId    the acting platform User id whenever the actor is resolvable
+ *              (the Telegram admin has linked their account — TelegramLink),
+ *              otherwise the bot actor label "tg-admin:<telegram id>".
+ *              Deliberately NOT a foreign key: bot actors must be auditable
+ *              even when no platform account maps to the Telegram id.
+ *   actorLabel human-readable identity (email or Telegram handle) for the
+ *              audit view — display only.
+ *   action     "APPROVE_CAMPAIGN" | "REJECT_CAMPAIGN" | "ADJUST_BALANCE" |
+ *              "GRANT_PREMIUM" | "REVOKE_PREMIUM" | "SET_ROLE"
+ *   targetId   what was acted on: the Campaign id for approve/reject, the
+ *              advertiser User id for balance/role actions.
+ *   reason     free text — REQUIRED in practice for REJECT_CAMPAIGN (the
+ *              same string the advertiser sees in their dashboard) and
+ *              optional everywhere else.
+ */
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String
+  actorLabel String?
+  action     String
+  targetId   String
+  reason     String?
+  createdAt  DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([action, createdAt])
+  @@index([targetId])
 }
 
 /**

@@ -194,6 +194,20 @@ bunx prisma migrate deploy         # apply committed migrations (PostgreSQL)
 # tab). Holds that see no validating event within the 30-minute TTL expire
 # and the campaign budget recovers — existing FINALIZED rows keep their
 # status; nothing is re-billed.
+# NOTE (ads Phase 4): migration 0014_ads_phase4_abtest_forecast_audit is
+# PURE ADDITIVE DDL: three new tables (Experiment, VariantAssignment,
+# AuditLog) and three new nullable/defaulted columns (User.adminRole
+# DEFAULT 'owner' — every existing account keeps FULL rights until a role
+# is deliberately demoted by an owner admin; BudgetReservation.variantId —
+# the A/B attribution stamp; AdEvent.section/locale — the serving-page
+# context that feeds the wizard's delivery forecast). No data transforms,
+# no behaviour change for existing rows: campaigns without experiments
+# serve exactly as before, the permission gates are invisible while every
+# adminRole is 'owner'. The forecast honestly answers "Insufficient data
+# to forecast" until the platform has ≥ 1000 loaded impressions in the
+# last 7 days (the section/locale columns only populate from new serves).
+# `prisma migrate deploy` picks it up automatically on the next
+# docker compose up -d --build.
 bun prisma/seed.ts                 # optional: reference dataset + demo accounts
 
 bun run dev                        # http://localhost:3000

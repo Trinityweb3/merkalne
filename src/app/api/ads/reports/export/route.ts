@@ -1,6 +1,7 @@
 import { handleRouteError, jsonError } from '@/lib/api'
 import { getSession } from '@/lib/auth'
 import { expireStaleReservations } from '@/lib/ads/auction'
+import { canViewReports } from '@/lib/ads/permissions'
 import { campaignReportRows, type CampaignReportRow } from '@/lib/ads/reporting'
 import { reportSpent, reportCtr, reportEcpc, reportCount } from '@/lib/ads/report-format'
 
@@ -25,6 +26,14 @@ export async function GET() {
   try {
     const session = await getSession()
     if (!session) return jsonError('Authentication required', 401)
+
+    // Phase-4 permission gate — the CSV export IS a report (OWNER +
+    // EDITOR + ANALYST, same as the Reports tab).
+    if (!canViewReports(session.user)) {
+      return jsonError('Your role does not allow viewing reports.', 403, {
+        code: 'forbidden_role',
+      })
+    }
 
     await expireStaleReservations()
     const rows = await campaignReportRows(session.user.id)

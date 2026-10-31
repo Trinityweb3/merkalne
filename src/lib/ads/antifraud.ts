@@ -110,3 +110,32 @@ export function hashVisitorIp(ip: string | null | undefined): string | null {
     .digest('hex')
     .slice(0, 16)
 }
+
+// ---------------------------------------------------------------------------
+// Stable visitor identity (Phase 4 — A/B assignment input)
+// ---------------------------------------------------------------------------
+
+/**
+ * The STABLE visitor id used for A/B variant assignment: a salted HMAC of
+ * IP + User-Agent (the same two signals the anonymous stats fingerprint
+ * uses, under a different construction so the two stores never correlate).
+ *
+ * Properties the A/B engine relies on:
+ *   • STABLE — the same visitor (same network + browser) hashes to the same
+ *     id on every request, so their variant arm never flips mid-experiment;
+ *   • SERVER-MINTED — the client never supplies it, so a visitor cannot
+ *     choose their arm (only the server sees the inputs and the secret);
+ *   • ANONYMOUS — a one-way HMAC prefix, never the raw IP.
+ */
+export function visitorStableId(
+  ip: string | null | undefined,
+  userAgent: string | null | undefined,
+): string {
+  const ipValue = (ip ?? '').trim() || 'unknown'
+  const uaValue = (userAgent ?? '').trim() || 'unknown'
+  return crypto
+    .createHmac('sha256', adsEventSecret)
+    .update(`${ipValue}|${uaValue}`)
+    .digest('hex')
+    .slice(0, 32)
+}

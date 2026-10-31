@@ -10,6 +10,7 @@ import { TOPUP_MAX_CENTS, TOPUP_MIN_CENTS, topUpMode } from '@/lib/ads/topup'
 import { allowedCoins } from '@/lib/ads/blockbee'
 import { reserveCampaignBudget } from '@/lib/ads/wallet'
 import { submitCampaignForReview } from '@/lib/ads/moderation'
+import { canManageCampaigns } from '@/lib/ads/permissions'
 import {
   BID_BOUNDS,
   DAILY_BUDGET_BOUNDS,
@@ -216,6 +217,15 @@ export async function POST(req: Request) {
     await assertMutationSafe(req)
     const session = await getSession()
     if (!session) return jsonError('Authentication required', 401)
+
+    // Phase-4 permission gate: campaign creation is OWNER + EDITOR (every
+    // account defaults to owner, so this only bites deliberately demoted
+    // roles — see src/lib/ads/permissions.ts).
+    if (!canManageCampaigns(session.user)) {
+      return jsonError('Your role does not allow creating campaigns.', 403, {
+        code: 'forbidden_role',
+      })
+    }
 
     const rl = rateLimit(`ads-campaign-create:${session.user.id}`, 6, 60_000)
     if (!rl.ok) return jsonError('Too many campaigns created — try again in a minute.', 429)

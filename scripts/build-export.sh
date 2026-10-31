@@ -607,6 +607,138 @@ assert_file_contains "${ROOT}/scripts/test-ads-events-e2e.ts" 'chromium' \
   "events e2e: a real Chromium pass (Playwright)"
 assert_file_contains "${ROOT}/scripts/test-ads-events-e2e.ts" 'formula' \
   "events e2e: CSV injection covered"
+
+# --- Ads Phase 4: A/B testing, forecasting, admin roles & audit log -------
+[ -f "${ROOT}/prisma/migrations/0014_ads_phase4_abtest_forecast_audit/migration.sql" ] && echo "  [ok]   migration 0014_ads_phase4_abtest_forecast_audit present" \
+  || { echo "  [FAIL] prisma/migrations/0014_ads_phase4_abtest_forecast_audit missing"; fail=1; }
+assert_file_contains "${ROOT}/prisma/migrations/0014_ads_phase4_abtest_forecast_audit/migration.sql" 'CREATE TABLE "Experiment"' \
+  "migration 0014: Experiment model"
+assert_file_contains "${ROOT}/prisma/migrations/0014_ads_phase4_abtest_forecast_audit/migration.sql" 'CREATE TABLE "VariantAssignment"' \
+  "migration 0014: VariantAssignment model"
+assert_file_contains "${ROOT}/prisma/migrations/0014_ads_phase4_abtest_forecast_audit/migration.sql" 'CREATE UNIQUE INDEX "VariantAssignment_experimentId_visitorId_key"' \
+  "migration 0014: one arm per visitor per experiment"
+assert_file_contains "${ROOT}/prisma/migrations/0014_ads_phase4_abtest_forecast_audit/migration.sql" 'CREATE TABLE "AuditLog"' \
+  "migration 0014: AuditLog model"
+assert_file_contains "${ROOT}/prisma/migrations/0014_ads_phase4_abtest_forecast_audit/migration.sql" 'ADD COLUMN "adminRole" TEXT NOT NULL DEFAULT '\''owner'\''' \
+  "migration 0014: User.adminRole defaults to owner (nobody loses rights)"
+assert_file_contains "${ROOT}/prisma/migrations/0014_ads_phase4_abtest_forecast_audit/migration.sql" 'ADD COLUMN "variantId" TEXT' \
+  "migration 0014: BudgetReservation.variantId attribution stamp"
+assert_file_contains "${ROOT}/prisma/migrations/0014_ads_phase4_abtest_forecast_audit/migration.sql" 'ADD COLUMN "section" TEXT' \
+  "migration 0014: AdEvent section context (forecast input)"
+for PHASE4_SCHEMA in schema.prisma schema.sqlite.prisma; do
+  assert_file_contains "${ROOT}/prisma/${PHASE4_SCHEMA}" 'model Experiment' \
+    "schema (${PHASE4_SCHEMA}): Experiment model"
+  assert_file_contains "${ROOT}/prisma/${PHASE4_SCHEMA}" 'model VariantAssignment' \
+    "schema (${PHASE4_SCHEMA}): VariantAssignment model"
+  assert_file_contains "${ROOT}/prisma/${PHASE4_SCHEMA}" 'model AuditLog' \
+    "schema (${PHASE4_SCHEMA}): AuditLog model"
+  assert_file_contains "${ROOT}/prisma/${PHASE4_SCHEMA}" 'adminRole     String    @default("owner")' \
+    "schema (${PHASE4_SCHEMA}): User.adminRole tier"
+done
+[ -f "${ROOT}/src/lib/ads/experiments.ts" ] && echo "  [ok]   A/B engine present" \
+  || { echo "  [FAIL] src/lib/ads/experiments.ts missing"; fail=1; }
+assert_file_contains "${ROOT}/src/lib/ads/experiments.ts" 'export function variantForVisitor' \
+  "experiments.ts: stable-hash 50/50 assignment"
+assert_file_contains "${ROOT}/src/lib/ads/experiments.ts" 'export function twoProportionZTest' \
+  "experiments.ts: two-proportion z-test on CTR"
+assert_file_contains "${ROOT}/src/lib/ads/experiments.ts" 'MIN_SAMPLE_PER_ARM = 100' \
+  "experiments.ts: the 100-impressions-per-arm significance gate"
+assert_file_contains "${ROOT}/src/lib/ads/experiments.ts" 'SIGNIFICANCE_ALPHA = 0.05' \
+  "experiments.ts: p ≤ 0.05 for a winner"
+[ -f "${ROOT}/src/lib/ads/forecast.ts" ] && echo "  [ok]   forecast engine present" \
+  || { echo "  [FAIL] src/lib/ads/forecast.ts missing"; fail=1; }
+assert_file_contains "${ROOT}/src/lib/ads/forecast.ts" 'FORECAST_MIN_PLATFORM_IMPRESSIONS = 1000' \
+  "forecast.ts: the 1000-impression honesty gate"
+assert_file_contains "${ROOT}/src/lib/ads/forecast.ts" 'FORECAST_WINDOW_DAYS = 7' \
+  "forecast.ts: 7-day lookback window"
+[ -f "${ROOT}/src/lib/ads/permissions.ts" ] && echo "  [ok]   permission tiers present" \
+  || { echo "  [FAIL] src/lib/ads/permissions.ts missing"; fail=1; }
+assert_file_contains "${ROOT}/src/lib/ads/permissions.ts" "['owner', 'editor']" \
+  "permissions.ts: campaign management = OWNER + EDITOR"
+assert_file_contains "${ROOT}/src/lib/ads/permissions.ts" "['owner', 'editor', 'analyst']" \
+  "permissions.ts: reports = OWNER + EDITOR + ANALYST"
+assert_file_contains "${ROOT}/src/lib/ads/permissions.ts" "['owner', 'billing']" \
+  "permissions.ts: balance adjustments = OWNER + BILLING"
+[ -f "${ROOT}/src/lib/ads/audit.ts" ] && echo "  [ok]   audit log writer present" \
+  || { echo "  [FAIL] src/lib/ads/audit.ts missing"; fail=1; }
+assert_file_contains "${ROOT}/src/lib/ads/audit.ts" 'APPROVE_CAMPAIGN' \
+  "audit.ts: campaign approvals audited"
+assert_file_contains "${ROOT}/src/lib/ads/audit.ts" 'REJECT_CAMPAIGN' \
+  "audit.ts: campaign rejections audited (with the reason)"
+assert_file_contains "${ROOT}/src/lib/ads/audit.ts" 'ADJUST_BALANCE' \
+  "audit.ts: balance adjustments audited"
+# serve path: the variant is chosen AFTER the draw (single auction weight)
+assert_file_contains "${ROOT}/src/lib/ads/auction.ts" 'variantForVisitor' \
+  "auction.ts: A/B variant chosen after the campaign wins"
+assert_file_contains "${ROOT}/src/lib/ads/auction.ts" 'recordVariantAssignment' \
+  "auction.ts: visitor assignments persisted"
+assert_file_contains "${ROOT}/src/lib/ads/antifraud.ts" 'export function visitorStableId' \
+  "antifraud.ts: stable server-minted visitor id"
+# routes
+for PHASE4_ROUTE in \
+  "src/app/api/ads/campaigns/[id]/experiments/route.ts" \
+  "src/app/api/ads/experiments/[id]/route.ts" \
+  "src/app/api/ads/forecast/route.ts" \
+  "src/app/api/admin/audit-log/route.ts" \
+  "src/app/api/admin/users/role/route.ts"; do
+  [ -f "${ROOT}/${PHASE4_ROUTE}" ] && echo "  [ok]   route present: ${PHASE4_ROUTE}" \
+    || { echo "  [FAIL] ${PHASE4_ROUTE} missing"; fail=1; }
+done
+assert_file_contains "${ROOT}/src/app/api/ads/forecast/route.ts" 'AD_SECTION_CONTEXTS' \
+  "forecast route: only known sections honoured"
+# permission gates wired into the existing routes
+assert_file_contains "${ROOT}/src/app/api/ads/campaigns/route.ts" 'canManageCampaigns' \
+  "campaigns API: creation gate (OWNER + EDITOR)"
+assert_file_contains "${ROOT}/src/app/api/ads/campaigns/[id]/route.ts" 'canManageCampaigns' \
+  "campaigns API: mutation/budget gate (OWNER + EDITOR)"
+assert_file_contains "${ROOT}/src/app/api/ads/reports/route.ts" 'canViewReports' \
+  "reports API: view gate (OWNER + EDITOR + ANALYST)"
+assert_file_contains "${ROOT}/src/app/api/ads/reports/export/route.ts" 'canViewReports' \
+  "reports export: view gate (OWNER + EDITOR + ANALYST)"
+assert_file_contains "${ROOT}/src/app/api/admin/ads/topups/[id]/confirm/route.ts" 'canAdjustBalance' \
+  "admin confirm: balance gate (OWNER + BILLING)"
+assert_file_contains "${ROOT}/src/app/api/admin/ads/topups/[id]/confirm/route.ts" 'ADJUST_BALANCE' \
+  "admin confirm: audit row with the credited amount"
+# audit writes in the moderation + bot paths
+assert_file_contains "${ROOT}/src/lib/ads/moderation.ts" 'logAdminAction' \
+  "moderation: approve/reject audited"
+assert_file_contains "${ROOT}/src/app/api/webhooks/telegram-admin/route.ts" 'resolveTelegramAdminActor' \
+  "admin bot: actor resolution for the audit trail"
+# UI
+[ -f "${ROOT}/src/components/site/ads/ab-testing.tsx" ] && echo "  [ok]   A/B Testing panel present" \
+  || { echo "  [FAIL] src/components/site/ads/ab-testing.tsx missing"; fail=1; }
+assert_file_contains "${ROOT}/src/components/site/ads/ab-testing.tsx" 'abInsufficient' \
+  "A/B panel: the honest 'Insufficient data' verdict line"
+assert_file_contains "${ROOT}/src/components/site/ads/ads-dashboard.tsx" 'AbTestingPanel' \
+  "dashboard: the A/B Testing tab wired into the campaign details"
+assert_file_contains "${ROOT}/src/components/site/ads/campaign-wizard.tsx" '/api/ads/forecast' \
+  "wizard Step 4: the delivery forecast box"
+assert_file_contains "${ROOT}/src/components/site/ads/campaign-wizard.tsx" 'forecastInsufficient' \
+  "wizard Step 4: the 'Insufficient data to forecast' fallback"
+# e2e coverage of the Phase-4 contract
+assert_file_contains "${ROOT}/scripts/test-ads-events-e2e.ts" 'variantForVisitor' \
+  "events e2e: A/B assignment covered (white-box hash)"
+assert_file_contains "${ROOT}/scripts/test-ads-events-e2e.ts" 'single auction weight' \
+  "events e2e: single-weight check present"
+assert_file_contains "${ROOT}/scripts/test-ads-events-e2e.ts" 'Insufficient data to forecast' \
+  "events e2e: the forecast fallback covered"
+assert_file_contains "${ROOT}/scripts/test-ads-events-e2e.ts" 'forbidden_role' \
+  "events e2e: permission tiers covered"
+assert_file_contains "${ROOT}/scripts/test-ads-events-e2e.ts" 'REJECT_CAMPAIGN' \
+  "events e2e: audit rows covered"
+# every dictionary carries the Phase-4 keys (grep loop, all 20 locales)
+PHASE4_COUNT="$(ls -1 "${ROOT}/src/i18n/messages" | grep -c '\.ts$')"
+PHASE4_OK=0
+for PHASE4_FILE in "${ROOT}"/src/i18n/messages/*.ts; do
+  if grep -q "abTab:" "${PHASE4_FILE}" && grep -q "abInsufficient:" "${PHASE4_FILE}" && grep -q "forecastInsufficient:" "${PHASE4_FILE}"; then
+    PHASE4_OK=$((PHASE4_OK + 1))
+  else
+    echo "  [FAIL] ${PHASE4_FILE##*/}: missing Phase-4 keys (abTab/abInsufficient/forecastInsufficient)"
+    fail=1
+  fi
+done
+[ "${PHASE4_OK}" -eq "${PHASE4_COUNT}" ] && echo "  [ok]   Phase-4 keys present in ${PHASE4_OK}/${PHASE4_COUNT} dictionaries" \
+  || { echo "  [FAIL] Phase-4 keys: only ${PHASE4_OK}/${PHASE4_COUNT} dictionaries covered"; fail=1; }
 # --- BlockBee processor + referral system (2026 payments build) ----------------
 assert_file_contains "${ROOT}/prisma/schema.prisma" 'model PaymentLog' \
   "schema: PaymentLog audit trail"
@@ -946,10 +1078,21 @@ for STAGE_MUST in \
   "prisma/migrations/0011_ads_phase1_double_entry/migration.sql" \
   "prisma/migrations/0012_ads_phase2_targeting_moderation/migration.sql" \
   "prisma/migrations/0013_ads_phase3_events/migration.sql" \
+  "prisma/migrations/0014_ads_phase4_abtest_forecast_audit/migration.sql" \
   "scripts/test-ads-e2e.ts" \
   "scripts/test-ads-events-e2e.ts" \
   "scripts/run-ads-events-e2e.sh" \
   "scripts/ui18n-codegen/inject-ads-phase3.ts" \
+  "src/app/api/ads/campaigns/[id]/experiments/route.ts" \
+  "src/app/api/ads/experiments/[id]/route.ts" \
+  "src/app/api/ads/forecast/route.ts" \
+  "src/app/api/admin/audit-log/route.ts" \
+  "src/app/api/admin/users/role/route.ts" \
+  "src/lib/ads/experiments.ts" \
+  "src/lib/ads/forecast.ts" \
+  "src/lib/ads/permissions.ts" \
+  "src/lib/ads/audit.ts" \
+  "src/components/site/ads/ab-testing.tsx" \
   "src/i18n/messages/en.ts"; do
   if [ -f "${STAGE}/merklane/${STAGE_MUST}" ]; then
     echo "  [ok]   staged: ${STAGE_MUST}"
@@ -1403,6 +1546,56 @@ if grep -rq "viewable_impression" "${VERIFY_DIR}/merklane/src/" \
   echo "  [ok]   archive: Phase-3 landmarks greppable (viewable_impression / IntersectionObserver / sanitizeCsvCell / isKnownBot)"
 else
   echo "  [FAIL] archive: Phase-3 landmarks not greppable — stale or partial bundle" >&2
+  archive_fail=1
+fi
+# --- Ads Phase 4 in-archive mirror --------------------------------------
+for PHASE4_ARCHIVE_FILE in \
+  "prisma/migrations/0014_ads_phase4_abtest_forecast_audit/migration.sql" \
+  "src/lib/ads/experiments.ts" \
+  "src/lib/ads/forecast.ts" \
+  "src/lib/ads/permissions.ts" \
+  "src/lib/ads/audit.ts" \
+  "src/app/api/ads/campaigns/[id]/experiments/route.ts" \
+  "src/app/api/ads/experiments/[id]/route.ts" \
+  "src/app/api/ads/forecast/route.ts" \
+  "src/app/api/admin/audit-log/route.ts" \
+  "src/app/api/admin/users/role/route.ts" \
+  "src/components/site/ads/ab-testing.tsx"; do
+  if [ -f "${VERIFY_DIR}/merklane/${PHASE4_ARCHIVE_FILE}" ]; then
+    echo "  [ok]   archive: ${PHASE4_ARCHIVE_FILE} ships"
+  else
+    echo "  [FAIL] archive: ${PHASE4_ARCHIVE_FILE} MISSING" >&2
+    archive_fail=1
+  fi
+done
+assert_file_contains "${VERIFY_DIR}/merklane/src/lib/ads/experiments.ts" 'twoProportionZTest' \
+  "archive: the z-test ships"
+assert_file_contains "${VERIFY_DIR}/merklane/src/lib/ads/auction.ts" 'variantForVisitor' \
+  "archive: the A/B variant is chosen after the draw"
+assert_file_contains "${VERIFY_DIR}/merklane/src/lib/ads/forecast.ts" 'FORECAST_MIN_PLATFORM_IMPRESSIONS' \
+  "archive: the forecast honesty gate ships"
+assert_file_contains "${VERIFY_DIR}/merklane/src/lib/ads/permissions.ts" 'canViewReports' \
+  "archive: the permission tiers ship"
+assert_file_contains "${VERIFY_DIR}/merklane/src/lib/ads/moderation.ts" 'REJECT_CAMPAIGN' \
+  "archive: moderation decisions land in the AuditLog"
+assert_file_contains "${VERIFY_DIR}/merklane/src/components/site/ads/campaign-wizard.tsx" 'forecastInsufficient' \
+  "archive: wizard Step 4 forecast fallback ships"
+archive_phase4_i18n_ok=0
+for dict in "${VERIFY_DIR}"/merklane/src/i18n/messages/*.ts; do
+  if grep -q "abTab:" "${dict}" && grep -q "forecastInsufficient:" "${dict}"; then
+    archive_phase4_i18n_ok=$((archive_phase4_i18n_ok + 1))
+  fi
+done
+[ "${archive_phase4_i18n_ok}" -eq 20 ] && echo "  [ok]   archive: Phase-4 keys in all 20 dictionaries" \
+  || { echo "  [FAIL] archive: Phase-4 keys in only ${archive_phase4_i18n_ok}/20 dictionaries"; archive_fail=1; }
+# Phase-4 landmarks, greppable the way a downstream verifier would:
+if grep -rq "variantForVisitor" "${VERIFY_DIR}/merklane/src/" \
+  && grep -rq "Insufficient data to forecast" "${VERIFY_DIR}/merklane/src/" \
+  && grep -rq "forbidden_role" "${VERIFY_DIR}/merklane/src/" \
+  && grep -rq "APPROVE_CAMPAIGN" "${VERIFY_DIR}/merklane/src/"; then
+  echo "  [ok]   archive: Phase-4 landmarks greppable (variantForVisitor / forecast fallback / forbidden_role / APPROVE_CAMPAIGN)"
+else
+  echo "  [FAIL] archive: Phase-4 landmarks not greppable — stale or partial bundle" >&2
   archive_fail=1
 fi
 # Cross-check: every file listed in the archive MANIFEST exists after extraction

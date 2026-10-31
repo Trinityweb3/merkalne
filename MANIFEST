@@ -30,6 +30,7 @@ prisma/migrations/0010_team_members/migration.sql
 prisma/migrations/0011_ads_phase1_double_entry/migration.sql
 prisma/migrations/0012_ads_phase2_targeting_moderation/migration.sql
 prisma/migrations/0013_ads_phase3_events/migration.sql
+prisma/migrations/0014_ads_phase4_abtest_forecast_audit/migration.sql
 prisma/migrations/migration_lock.toml
 prisma/schema.prisma
 prisma/schema.sqlite.prisma
@@ -42,6 +43,7 @@ public/uploads/ads/0d686e64-4007-4fce-99d0-64ff36352746.png
 public/uploads/ads/1c51e91a-c825-46d5-9f2d-76264e82ae3c.png
 public/uploads/ads/41edfefa-cb4e-45d9-bcb8-169eabc1e575.webp
 public/uploads/ads/454de093-029a-44a7-b0b2-7030628e5949.png
+public/uploads/ads/59396e15-10ea-4123-8eff-cd4b48cc3c1e.webp
 public/uploads/ads/65ceb30b-a8bf-47e3-8f7e-aebe75d0f0fc.png
 public/uploads/ads/73b6d9b2-36ce-413f-a4a4-4a58bf398e83.webp
 public/uploads/ads/7e062f23-2366-4d3b-913e-67f8cf84ae81.png
@@ -51,6 +53,7 @@ public/uploads/ads/869fd31e-50a8-4c69-acc7-5c6938e4ae70.png
 public/uploads/ads/9741994f-11ff-45ea-8d64-b162d84c8956.png
 public/uploads/ads/992b4a3b-8eb8-4070-be30-d6ba091b116e.png
 public/uploads/ads/README.txt
+public/uploads/ads/aa84d36f-5c6e-4d60-8032-e8a742579d15.png
 public/uploads/ads/bf155fd0-474a-4fcb-85c9-ed739c9f9951.webp
 public/uploads/ads/c08af047-85af-4891-8bdf-5a844440989a.webp
 public/uploads/ads/d0d8953a-dbe2-45b5-a352-a7bb44e0661e.png
@@ -59,6 +62,7 @@ public/uploads/ads/dd07f3f9-e77d-4d34-9846-f89b10d9b1d6.webp
 public/uploads/ads/ecee902a-4761-40ee-8733-159abc914d74.png
 scripts/add-ads-i18n-keys.mjs
 scripts/add-ads2-i18n-keys.mjs
+scripts/add-ads4-i18n-keys.mjs
 scripts/add-premium-i18n-keys.mjs
 scripts/apply-migration-sql.ts
 scripts/build-export.sh
@@ -155,13 +159,18 @@ src/app/api/account/sessions/[id]/route.ts
 src/app/api/account/sessions/route.ts
 src/app/api/account/stats/route.ts
 src/app/api/admin/ads/topups/[id]/confirm/route.ts
+src/app/api/admin/audit-log/route.ts
 src/app/api/admin/dispatch/route.ts
 src/app/api/admin/stats/route.ts
+src/app/api/admin/users/role/route.ts
 src/app/api/ads/assets/upload/route.ts
+src/app/api/ads/campaigns/[id]/experiments/route.ts
 src/app/api/ads/campaigns/[id]/route.ts
 src/app/api/ads/campaigns/route.ts
 src/app/api/ads/click/[token]/route.ts
 src/app/api/ads/event/route.ts
+src/app/api/ads/experiments/[id]/route.ts
+src/app/api/ads/forecast/route.ts
 src/app/api/ads/reports/export/route.ts
 src/app/api/ads/reports/route.ts
 src/app/api/ads/serve/route.ts
@@ -213,6 +222,7 @@ src/app/sitemap.ts
 src/components/providers/session-provider.tsx
 src/components/site/about-stats.tsx
 src/components/site/ads-waitlist.tsx
+src/components/site/ads/ab-testing.tsx
 src/components/site/ads/ad-slot.tsx
 src/components/site/ads/ads-dashboard.tsx
 src/components/site/ads/ads-reports.tsx
@@ -320,10 +330,14 @@ src/i18n/routing.ts
 src/lib/about-content.ts
 src/lib/ads/antifraud.ts
 src/lib/ads/auction.ts
+src/lib/ads/audit.ts
 src/lib/ads/blockbee.ts
 src/lib/ads/events.ts
+src/lib/ads/experiments.ts
+src/lib/ads/forecast.ts
 src/lib/ads/moderation.ts
 src/lib/ads/money.ts
+src/lib/ads/permissions.ts
 src/lib/ads/report-format.ts
 src/lib/ads/reporting.ts
 src/lib/ads/targeting.ts

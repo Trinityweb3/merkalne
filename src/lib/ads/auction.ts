@@ -66,6 +66,11 @@ import { perEventMicroUsd, type AdFormat, type BillingModel } from '@/lib/ads/mo
 import { signAdToken } from '@/lib/ads/tokens'
 import { logAdEvent } from '@/lib/ads/events'
 import { truncateUserAgent, hashVisitorIp } from '@/lib/ads/antifraud'
+import {
+  recordVariantAssignment,
+  variantForVisitor,
+  type VariantId,
+} from '@/lib/ads/experiments'
 
 export const AD_SLOT_IDS = ['home_banner', 'feed', 'article_bottom'] as const
 export type AdSlotId = (typeof AD_SLOT_IDS)[number]
@@ -356,7 +361,62 @@ export async function serveAd(slot: string, ctx: AdRequestContext = {}): Promise
 
     const drawn = pickPoolAndDraw(eligible)
     if (!drawn) return null
-    const creative = drawn.campaign.creatives[0]
+
+    // ------------------------------------------------------------------
+    // Phase 4 — A/B variant selection (AFTER the draw, by design).
+    // The campaign entered the eligibility list and the weighted draw
+    // exactly ONCE, so an experiment never changes its win probability;
+    // only the CREATIVE the winning impression renders is chosen here:
+    // a stable hash of the visitor id splits 50/50 and sticks per visitor.
+    // Falls back to the latest approved creative (variantId null) whenever
+    // the experiment is not running or the chosen variant's creative is no
+    // longer APPROVED — the auction itself never breaks.
+    // ------------------------------------------------------------------
+    let creative: {
+      title: string | null
+      body: string | null
+      imageUrl: string | null
+      altText: string | null
+      displayDomain: string | null
+      targetUrl: string
+    } = drawn.campaign.creatives[0]
+    let variantId: VariantId | null = null
+    if (ctx.visitorId) {
+      const experiment = await db.experiment.findFirst({
+        where: { campaignId: drawn.id, status: 'running' },
+        select: { id: true, creativeAId: true, creativeBId: true },
+      })
+      if (experiment) {
+        const variant = variantForVisitor(experiment.id, ctx.visitorId)
+        const creativeId = variant === 'A' ? experiment.creativeAId : experiment.creativeBId
+        const variantCreative = await db.creative.findUnique({
+          where: { id: creativeId },
+          select: {
+            title: true,
+            body: true,
+            imageUrl: true,
+            altText: true,
+            displayDomain: true,
+            targetUrl: true,
+            moderationStatus: true,
+          },
+        })
+        if (variantCreative && variantCreative.moderationStatus === 'approved') {
+          variantId = variant
+          creative = variantCreative
+          await recordVariantAssignment({
+            experimentId: experiment.id,
+            visitorId: ctx.visitorId,
+            variantId: variant,
+          })
+        }
+        // else: the variant creative fell out of APPROVED mid-flight (a
+        // revision went back to review) — serve the latest approved
+        // creative WITHOUT a variant stamp, exactly like a campaign with
+        // no experiment. The collected statistics stay honest.
+      }
+    }
+
     const expiresAt = new Date(Date.now() + RESERVATION_TTL_MS)
 
     // Phase 3 — BOTH models hold at serve time, NOTHING is charged here.
@@ -366,7 +426,14 @@ export async function serveAd(slot: string, ctx: AdRequestContext = {}): Promise
     // campaign's derived budget; if two concurrent serves over-commit, the
     // extra hold expires in 30 minutes and never charges anything.
     const reservation = await db.budgetReservation.create({
-      data: { campaignId: drawn.id, amountMicroUsd: drawn.perEvent, status: 'held', expiresAt },
+      data: {
+        campaignId: drawn.id,
+        amountMicroUsd: drawn.perEvent,
+        status: 'held',
+        expiresAt,
+        // Phase 4: the A/B attribution stamp (null for ordinary serves).
+        variantId,
+      },
     })
 
     // The serve event itself: logged server-side, exactly once per hold.
@@ -379,6 +446,9 @@ export async function serveAd(slot: string, ctx: AdRequestContext = {}): Promise
       slot,
       userAgent: truncateUserAgent(ctx.userAgent),
       ipHash: hashVisitorIp(ctx.visitorIp),
+      // Phase 4: the serving-page context feeds the delivery forecast.
+      section: ctx.section ?? null,
+      locale: ctx.locale ?? null,
     })
 
     return toServedAd(drawn.campaign, creative, {

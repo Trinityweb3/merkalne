@@ -4,6 +4,8 @@ import { handleRouteError, jsonError, jsonOk } from '@/lib/api'
 import { assertMutationSafe } from '@/lib/csrf'
 import { getSession } from '@/lib/auth'
 import { confirmTopUp } from '@/lib/ads/topup'
+import { canAdjustBalance } from '@/lib/ads/permissions'
+import { logAdminAction } from '@/lib/ads/audit'
 
 export const dynamic = 'force-dynamic'
 
@@ -19,6 +21,11 @@ const confirmSchema = z.object({
  * confirms; the advertiser's ad wallet is credited exactly once. Optionally
  * the actually-received amount can be passed to credit a partial/over
  * payment.
+ *
+ * Phase 4: this is a BALANCE ADJUSTMENT — the granular permission gate is
+ * OWNER + BILLING (admins default to owner, so existing operators keep
+ * working unchanged), and every confirmation lands in the AuditLog with the
+ * credited amount as the reason string.
  */
 export async function POST(req: Request, ctx: { params: Promise<{ id: string }> }) {
   try {
@@ -26,6 +33,12 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     const session = await getSession()
     if (!session) return jsonError('Authentication required', 401)
     if (session.user.role !== 'admin') return jsonError('Admin role required', 403)
+    // Phase-4 granular tier: balance administration is OWNER + BILLING.
+    if (!canAdjustBalance(session.user)) {
+      return jsonError('Your role does not allow balance adjustments.', 403, {
+        code: 'forbidden_role',
+      })
+    }
 
     const { id } = await ctx.params
     const topUp = await db.cryptoTopUp.findUnique({ where: { id } })
@@ -45,9 +58,22 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
         400,
       )
     }
+
+    // Phase 4 — the audit trail: who credited whom, and how much. The
+    // credited amount rides in the reason string (the AuditLog carries the
+    // actor / action / target / reason, exactly the spec's shape).
+    const credited = result.creditedCents ?? 0
+    await logAdminAction({
+      actorId: session.user.id,
+      actorLabel: session.user.email,
+      action: 'ADJUST_BALANCE',
+      targetId: topUp.advertiserId,
+      reason: `Ad wallet credited $${(credited / 100).toFixed(2)} (manual deposit confirm, top-up ${id})`,
+    })
+
     return jsonOk({
       status: 'confirmed',
-      creditedCents: result.creditedCents,
+      creditedCents: credited,
     })
   } catch (err) {
     return handleRouteError(err)

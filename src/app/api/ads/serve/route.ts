@@ -1,7 +1,7 @@
 import { handleRouteError, jsonOk } from '@/lib/api'
 import { clientIp, rateLimit } from '@/lib/rate-limit'
 import { AD_SLOT_IDS, serveAd, type AdSlotId } from '@/lib/ads/auction'
-import { isKnownBot } from '@/lib/ads/antifraud'
+import { isKnownBot, visitorStableId } from '@/lib/ads/antifraud'
 import {
   AD_SECTION_CONTEXTS,
   AD_LOCALE_CODES,
@@ -102,6 +102,11 @@ export async function GET(req: Request) {
       // loaded_impression row (bot filtering already happened above).
       userAgent: userAgent ?? undefined,
       visitorIp: clientIp(req),
+      // Phase 4: the STABLE visitor id (salted HMAC of IP + UA, minted
+      // server-side). After a campaign with a RUNNING A/B experiment wins
+      // the draw, a stable hash of this id picks the variant — the same
+      // visitor always sees the same variant. Never client-supplied.
+      visitorId: visitorStableId(clientIp(req), userAgent),
     })
     if (!ad) return new Response(null, { status: 204 })
     return jsonOk({ ad })

@@ -8,6 +8,7 @@ import { getSession } from '@/lib/auth'
 import { campaignBudgetStates, expireStaleReservations } from '@/lib/ads/auction'
 import { refundCampaignBudget, reserveCampaignBudget, MIN_ALLOCATION_CENTS } from '@/lib/ads/wallet'
 import { submitCampaignForReview } from '@/lib/ads/moderation'
+import { canManageCampaigns } from '@/lib/ads/permissions'
 import {
   MAX_COUNTRIES,
   MAX_HASHTAGS,
@@ -116,6 +117,15 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
     await assertMutationSafe(req)
     const session = await getSession()
     if (!session) return jsonError('Authentication required', 401)
+
+    // Phase-4 permission gate: every campaign mutation — including budget
+    // changes ('fund' / the draft budget field) — is OWNER + EDITOR. The
+    // default role is owner, so nothing changes until a role is demoted.
+    if (!canManageCampaigns(session.user)) {
+      return jsonError('Your role does not allow campaign or budget changes.', 403, {
+        code: 'forbidden_role',
+      })
+    }
 
     const { id } = await ctx.params
     const parsed = patchSchema.safeParse(await req.json().catch(() => null))

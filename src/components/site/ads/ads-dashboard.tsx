@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslations } from 'next-intl'
-import { Megaphone, PencilLine, Plus, Send, Target, Trash2, Wallet, X, BarChart3 } from 'lucide-react'
+import { BarChart3, FlaskConical, Megaphone, PencilLine, Plus, Send, Target, Trash2, Wallet, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { api } from '@/lib/api-client'
@@ -18,6 +18,7 @@ import {
   type WizardCampaign,
 } from '@/components/site/ads/campaign-wizard'
 import { AdsReportsView } from '@/components/site/ads/ads-reports'
+import { AbTestingPanel } from '@/components/site/ads/ab-testing'
 
 /**
  * Advertiser dashboard — the "Merklane ADS" tab of the profile cabinet.
@@ -250,6 +251,11 @@ export function AdsDashboard() {
   const [deleteFor, setDeleteFor] = useState<Campaign | null>(null)
   const [deleteBusy, setDeleteBusy] = useState(false)
 
+  // Phase 4 — the A/B Testing tab of the campaign details (per-campaign
+  // panel: create / start / pause / finish a test + per-variant statistics
+  // with the two-proportion z-test verdict).
+  const [abFor, setAbFor] = useState<Campaign | null>(null)
+
   // ------------------------------------------------------------- deposit io
   useEffect(() => {
     if (!activeDeposit || activeDeposit.status !== 'pending') return
@@ -462,6 +468,7 @@ export function AdsDashboard() {
           onFund={openFund}
           onToggle={toggleCampaign}
           onDelete={setDeleteFor}
+          onAb={(c) => setAbFor(c)}
         />
       )}
 
@@ -477,6 +484,20 @@ export function AdsDashboard() {
           availableMicro={availableMicro}
           onClose={() => setWizardOpen(null)}
           onSaved={refresh}
+        />
+      ) : null}
+
+      {/* ---------------------------------------------------------------- */}
+      {/* Phase 4 — A/B Testing (the campaign details' experiment tab):      */}
+      {/* create a test from two approved creatives, start/pause/finish it,  */}
+      {/* per-variant impressions/clicks/CTR/eCPC + the z-test verdict.      */}
+      {/* ---------------------------------------------------------------- */}
+      {abFor ? (
+        <AbTestingPanel
+          campaignId={abFor.id}
+          campaignName={abFor.name}
+          onClose={() => setAbFor(null)}
+          onChanged={refresh}
         />
       ) : null}
 
@@ -878,6 +899,7 @@ function CampaignsView({
   onFund,
   onToggle,
   onDelete,
+  onAb,
 }: {
   campaigns: Campaign[]
   loaded: boolean
@@ -889,6 +911,8 @@ function CampaignsView({
   onFund: (c: Campaign) => void
   onToggle: (c: Campaign) => void
   onDelete: (c: Campaign) => void
+  /** Open the campaign details' A/B Testing tab (Phase 4). */
+  onAb: (c: Campaign) => void
 }) {
   const t = useTranslations('ads')
   const tc = useTranslations('common')
@@ -1080,6 +1104,13 @@ function CampaignsView({
                     <Button variant="outline" onClick={() => onEdit(c)}>
                       <PencilLine width={15} height={15} aria-hidden />
                       {t('editBtn')}
+                    </Button>
+                  ) : null}
+                  {/* Phase 4 — the A/B Testing tab of this campaign's details. */}
+                  {!completed ? (
+                    <Button variant="outline" onClick={() => onAb(c)}>
+                      <FlaskConical width={15} height={15} aria-hidden />
+                      {t('abTab')}
                     </Button>
                   ) : null}
                   {!completed ? (

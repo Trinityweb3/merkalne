@@ -34,6 +34,10 @@ export interface SessionUser {
   name: string | null
   image: string | null
   role: string
+  /// Phase-4 granular permission tier (owner | editor | analyst | billing) —
+  /// see src/lib/ads/permissions.ts. Read from the DB row via the session;
+  /// never client-supplied.
+  adminRole: string
   plan: string
   premiumUntil: Date | null
   emailVerified: Date | null
@@ -147,6 +151,7 @@ export function toSessionUser(user: {
   name: string | null
   image: string | null
   role: string
+  adminRole?: string | null
   plan: string
   premiumUntil: Date | null
   emailVerified: Date | null
@@ -161,6 +166,7 @@ export function toSessionUser(user: {
     name: user.name,
     image: user.image,
     role: user.role,
+    adminRole: user.adminRole ?? 'owner',
     plan: user.plan,
     premiumUntil: user.premiumUntil,
     emailVerified: user.emailVerified,

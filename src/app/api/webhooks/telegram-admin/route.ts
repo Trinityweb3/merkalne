@@ -48,6 +48,7 @@ import {
   type ModerationQueueItem,
 } from '@/lib/ads/moderation'
 import { formatMicroUsd } from '@/lib/ads/money'
+import { logAdminAction, resolveTelegramAdminActor } from '@/lib/ads/audit'
 
 /**
  * POST /api/webhooks/telegram-admin — the ADMIN INTAKE BOT webhook.
@@ -1011,6 +1012,17 @@ async function handleMessage(update: TelegramUpdate, fromId: string, chatId: str
           return
         }
         const res = await grantPremium(email, Math.floor(days))
+        if (res.ok) {
+          // Phase 4 — every admin action lands in the AuditLog.
+          const actor = await resolveTelegramAdminActor(fromId)
+          await logAdminAction({
+            actorId: actor.actorId,
+            actorLabel: actor.actorLabel,
+            action: 'GRANT_PREMIUM',
+            targetId: email.toLowerCase(),
+            reason: `Granted ${Math.floor(days)} premium days via /grant`,
+          })
+        }
         await send(chatId, res.ok ? `✅ ${res.message}` : `⚠️ ${res.message}`)
         return
       }
@@ -1022,6 +1034,16 @@ async function handleMessage(update: TelegramUpdate, fromId: string, chatId: str
           return
         }
         const res = await revokePremium(email)
+        if (res.ok) {
+          const actor = await resolveTelegramAdminActor(fromId)
+          await logAdminAction({
+            actorId: actor.actorId,
+            actorLabel: actor.actorLabel,
+            action: 'REVOKE_PREMIUM',
+            targetId: email.toLowerCase(),
+            reason: 'Revoked premium via /revoke',
+          })
+        }
         await send(chatId, res.ok ? `✅ ${res.message}` : `⚠️ ${res.message}`)
         return
       }

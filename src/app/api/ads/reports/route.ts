@@ -1,6 +1,7 @@
 import { handleRouteError, jsonError, jsonOk } from '@/lib/api'
 import { getSession } from '@/lib/auth'
 import { expireStaleReservations } from '@/lib/ads/auction'
+import { canViewReports } from '@/lib/ads/permissions'
 import { campaignReportRows } from '@/lib/ads/reporting'
 
 export const dynamic = 'force-dynamic'
@@ -21,6 +22,14 @@ export async function GET() {
   try {
     const session = await getSession()
     if (!session) return jsonError('Authentication required', 401)
+
+    // Phase-4 permission gate: reports are OWNER + EDITOR + ANALYST (an
+    // analyst is the read-only delivery-statistics tier).
+    if (!canViewReports(session.user)) {
+      return jsonError('Your role does not allow viewing reports.', 403, {
+        code: 'forbidden_role',
+      })
+    }
 
     // Sweep first so holds that never saw a validating event stop counting
     // against the budgets (the same read-time hygiene as the campaigns API).

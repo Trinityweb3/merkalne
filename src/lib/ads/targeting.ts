@@ -185,6 +185,14 @@ export interface AdRequestContext {
    */
   userAgent?: string
   visitorIp?: string
+  /**
+   * Phase 4 A/B testing: the STABLE server-minted visitor id
+   * (antifraud.visitorStableId — salted HMAC of IP + User-Agent). Not used
+   * for targeting — after a campaign with a RUNNING experiment wins the
+   * draw, this id decides (via a stable hash) which variant the visitor
+   * sees, so the same user always lands in the same arm.
+   */
+  visitorId?: string
 }
 
 /** The targeting slice of a Campaign row, as the auction reads it. */
