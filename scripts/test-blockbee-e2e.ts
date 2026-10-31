@@ -6,11 +6,12 @@
  * journey against a live dev server (wallet-first ads flow):
  *
  *   wallet deposit intention (coin picker, TRON + unknown coins rejected,
- *   campaign create with an empty wallet rejected)
+ *   campaign submission with an empty wallet rejected)
  *   → signed pending IPN (RSA x-ca-signature)
  *   → signed confirmed IPN (HMAC token) → ad WALLET credited + referrer's
  *     50% commission landed
- *   → campaign created + funded FROM the wallet (starts ACTIVE)
+ *   → campaign submitted + funded FROM the wallet (Phase 2: PENDING, then
+ *     approved so the payment rails can continue)
  *   → duplicate IPN → idempotent (no double credit)
  *   → forged / missing signature → 401 + PaymentLog rejected
  *   → wrong nonce / unknown order → acked but never credited
@@ -306,8 +307,9 @@ async function main(): Promise<void> {
   check(Boolean(referrer.id && advertiser.id), 'users + sessions seeded')
 
   console.log('— 2. wallet-first ads flow: deposit intention → campaign funded from the wallet —')
-  // Campaign create BEFORE the wallet holds money → rejected (the old
-  // "create paused, top up later" flow is gone — see /api/ads/campaigns).
+  // Campaign SUBMISSION (Phase 2: create-as-draft is free, submit:true is
+  // the money gate) BEFORE the wallet holds money → rejected. See
+  // /api/ads/campaigns — a draft never locks wallet funds.
   const premature = await call('/api/ads/campaigns', {
     method: 'POST',
     body: {
@@ -320,9 +322,10 @@ async function main(): Promise<void> {
       targetUrl: 'https://acme.example',
       headline: 'No wallet funds yet.',
       body: 'Waiting for a deposit.',
+      submit: true,
     },
   })
-  check(premature.status === 400 && premature.data?.code === 'insufficient_wallet', 'campaign create with empty wallet → 400 insufficient_wallet')
+  check(premature.status === 400 && premature.data?.code === 'insufficient_wallet', 'campaign submission with empty wallet → 400 insufficient_wallet')
 
   const list = await call('/api/ads/campaigns')
   check(list.data?.topUp?.mode === 'blockbee', 'campaigns GET advertises blockbee mode')
@@ -432,11 +435,17 @@ async function main(): Promise<void> {
       targetUrl: 'https://acme.example',
       headline: 'Paying with hosted addresses.',
       body: 'BlockBee → wallet → campaign budget.',
+      submit: true,
     },
   })
-  check(created.status === 201, `campaign created + funded from wallet (got ${created.status})`)
-  check(created.data?.status === 'active', 'funded campaign starts ACTIVE (serves immediately)')
+  check(created.status === 201, `campaign created + submitted from wallet (got ${created.status})`)
+  check(created.data?.status === 'pending', 'submitted campaign enters moderation (PENDING — the Phase 2 lifecycle)')
   const campaignId = created.data?.id as string
+  // The full Telegram-moderation journey is covered by the ads e2e; here the
+  // decision is applied directly so the payment rails can continue.
+  await db.campaign.update({ where: { id: campaignId }, data: { status: 'active' } })
+  await db.creative.updateMany({ where: { campaignId }, data: { moderationStatus: 'approved' } })
+  check(true, 'campaign approved (direct DB) — payment flow continues')
 
   const walletSpent = await call('/api/ads/wallet')
   check(walletSpent.data?.availableMicroUsd === 0, 'wallet drained by the allocation')

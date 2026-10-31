@@ -10,6 +10,9 @@ rm -f "${LOG}" "${DB}"
 
 # .env for this run: fresh sqlite + simulate top-ups so the advertiser can
 # self-confirm (the production default is manual/admin confirmation).
+# The admin-bot webhook secret + admin id list let the moderation section
+# drive the REAL telegram-admin route (console-fallback replies — no bot
+# token, mirroring run-admin-bot-e2e.sh).
 cp .env /tmp/env.backup.ads
 cat > .env <<EOF
 DATABASE_URL="file:${DB}"
@@ -17,6 +20,8 @@ DATABASE_PROVIDER="sqlite"
 APP_URL="http://localhost:${PORT}"
 ADS_TOPUP_MODE="simulate"
 AUTH_SECRET="ads-e2e-test-secret-0123456789abcdef"
+TELEGRAM_ADMIN_WEBHOOK_SECRET="test_admin_secret_0123456789ab"
+TELEGRAM_ADMIN_USER_IDS="999000111"
 EOF
 
 # Push the schema into the fresh DB. (Explicit export: an inherited shell

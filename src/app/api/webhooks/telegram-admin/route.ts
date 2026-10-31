@@ -9,6 +9,7 @@ import {
   telegramDownloadAsDataUrl,
   telegramEditMessageText,
   telegramSendMessage,
+  telegramSendPhoto,
   type TelegramInlineButton,
   type TelegramUpdate,
 } from '@/lib/bots/telegram'
@@ -37,6 +38,16 @@ import {
   updateTeamMember,
   type TeamMemberRow,
 } from '@/lib/team'
+import {
+  approveCampaign,
+  listModerationQueue,
+  moderationPreviewLines,
+  rejectCampaign,
+  REJECT_REASON_MAX,
+  REJECT_REASON_MIN,
+  type ModerationQueueItem,
+} from '@/lib/ads/moderation'
+import { formatMicroUsd } from '@/lib/ads/money'
 
 /**
  * POST /api/webhooks/telegram-admin — the ADMIN INTAKE BOT webhook.
@@ -82,6 +93,12 @@ const HELP_TEXT = [
   '🖼 Change logo — upload the browser tab icon (favicon).',
   'Changes go live within a minute (60 s cache).',
   '',
+  '<b>Ads moderation</b>',
+  '🛡 Moderation Queue — every campaign submitted for review:',
+  'preview the creative (banner images included), then',
+  '✅ Approve (goes live) or ❌ Reject (with a reason the',
+  'advertiser sees in their dashboard).',
+  '',
   '<b>Power commands</b>',
   '/addjob Title | Company | URL | Section | tags,comma [key=value…]',
   '/jobs [n] — recent postings · /publish &lt;id&gt;',
@@ -105,6 +122,7 @@ const mainMenu: Keyboard = {
   inline_keyboard: [
     row(cb('➕ Add job', 'new')),
     row(cb('📋 Recent jobs', 'jobs'), cb('📊 Stats', 'stats')),
+    row(cb('🛡 Moderation Queue', 'mod')),
     row(cb('👥 Manage team', 'team'), cb('🖼 Change logo', 'logo')),
     row(cb('❓ Help', 'help')),
   ],
@@ -144,6 +162,59 @@ function removeConfirmKeyboard(id: string): Keyboard {
       row(cb('⬅️ Keep member', `member:${id}`)),
     ],
   }
+}
+
+// ---------------------------------------------------------------------------
+// Ads moderation queue (🛡 Moderation Queue)
+// ---------------------------------------------------------------------------
+
+/** Queue root: one button per PENDING campaign (oldest first) + back. */
+function moderationQueueKeyboard(items: ModerationQueueItem[]): Keyboard {
+  return {
+    inline_keyboard: [
+      ...items.map((item) =>
+        row(
+          cb(
+            `${item.campaign.format === 'banner' ? '🖼' : '📝'} ${item.campaign.name.slice(0, 40)} — v${item.creative?.version ?? 1}`,
+            `modv:${item.campaign.id}`,
+          ),
+        ),
+      ),
+      row(cb('🔄 Refresh', 'mod')),
+      row(cb('⬅️ Menu', 'menu')),
+    ],
+  }
+}
+
+/** One pending campaign: the moderator's decision. */
+function moderationItemKeyboard(campaignId: string): Keyboard {
+  return {
+    inline_keyboard: [
+      row(cb('✅ Approve', `modok:${campaignId}`), cb('❌ Reject', `modno:${campaignId}`)),
+      row(cb('⬅️ Queue', 'mod'), cb('⬅️ Menu', 'menu')),
+    ],
+  }
+}
+
+/** Queue list text (HTML) — the review backlog, oldest first. */
+function moderationQueueText(items: ModerationQueueItem[]): string {
+  if (items.length === 0) {
+    return ['<b>🛡 Moderation Queue</b>', '', 'No campaigns waiting for review — advertisers submit them from the wizard (Step 5).'].join('\n')
+  }
+  const lines = ['<b>🛡 Moderation Queue</b>', '', `${items.length} campaign${items.length === 1 ? '' : 's'} waiting (oldest first):`, '']
+  for (const item of items) {
+    const c = item.campaign
+    const bid =
+      c.billingModel === 'cpc'
+        ? `${formatMicroUsd(c.bidMicroUsd)}/click`
+        : `${formatMicroUsd(c.bidMicroUsd)}/1000 views`
+    lines.push(
+      `${c.format === 'banner' ? '🖼' : '📝'} <b>${esc(c.name)}</b> · ${c.billingModel.toUpperCase()} · ${bid} · budget ${formatMicroUsd(c.totalBudgetMicroUsd)}`,
+      `    by ${esc(item.advertiserEmail)}`,
+    )
+  }
+  lines.push('', 'Tap a campaign to preview and decide.')
+  return lines.join('\n')
 }
 
 /**
@@ -237,7 +308,7 @@ const confirmKeyboard: Keyboard = {
 // Paste / confirm state (TelegramAdminState)
 // ---------------------------------------------------------------------------
 
-type Step = 'paste' | 'confirm' | 'cms'
+type Step = 'paste' | 'confirm' | 'cms' | 'moderation'
 
 // NOTE: a type alias (not an interface) — object *type aliases* receive an
 // implicit index signature, which is what makes this assignable to Prisma's
@@ -247,6 +318,8 @@ type Draft = {
   guesses?: string[]
   /** CMS flow target while step === 'cms' (team CMS, site logo). */
   cms?: CmsTarget
+  /** Moderation flow target while step === 'moderation'. */
+  moderation?: ModerationTarget
 }
 
 /** Team CMS state — what the next non-command message means. */
@@ -258,6 +331,9 @@ type CmsTarget =
   | { kind: 'role'; memberId: string }
   | { kind: 'social'; memberId: string }
   | { kind: 'add-member'; step: 'name' | 'role' | 'social'; name?: string; role?: string }
+
+/** Ads moderation state — the pending rejection reason capture. */
+type ModerationTarget = { kind: 'reject-reason'; campaignId: string }
 
 function esc(s: string): string {
   return tgEscape(s)
@@ -567,6 +643,91 @@ async function handleCallback(update: TelegramUpdate, fromId: string, chatId: st
     return
   }
 
+  // --- Ads moderation queue (🛡): mod / modv / modok / modno -----------------
+  if (data === 'mod') {
+    await clearState(fromId)
+    const items = await listModerationQueue()
+    await edit(chatId, messageId, moderationQueueText(items), moderationQueueKeyboard(items))
+    return
+  }
+  if (data.startsWith('modv:')) {
+    const campaignId = data.slice(5)
+    const items = await listModerationQueue()
+    const item = items.find((i) => i.campaign.id === campaignId)
+    if (!item) {
+      await telegramAnswerCallbackQuery(cq.id, 'Not in the queue anymore — refreshing.', { token: TOKEN, showAlert: true })
+      await edit(chatId, messageId, moderationQueueText(await listModerationQueue()), moderationQueueKeyboard(await listModerationQueue()))
+      return
+    }
+    await clearState(fromId)
+    const caption = moderationPreviewLines(esc, item).join('\n')
+    // Banner campaigns: show the actual image. Telegram must be able to
+    // fetch it, so the local upload path becomes an absolute APP_URL URL;
+    // when that fails (unreachable host, dev tunnel down) the preview
+    // falls back to a text card so moderation never blocks.
+    if (item.campaign.format === 'banner' && item.creative?.imageUrl) {
+      const photoUrl = `${botEnv.APP_URL.replace(/\/+$/, '')}${item.creative.imageUrl}`
+      const keyboard = moderationItemKeyboard(campaignId)
+      const sent = await telegramSendPhoto(chatId, photoUrl, caption, {
+        token: TOKEN,
+        replyMarkup: { inline_keyboard: keyboard.inline_keyboard },
+      })
+      if (sent.delivered || sent.devFallback) return
+      // Photo undeliverable — text preview instead (imageUrl noted).
+      await edit(
+        chatId,
+        messageId,
+        [...moderationPreviewLines(esc, item), '', '<i>(The banner image could not be previewed here — check it in the dashboard.)</i>'].join('\n'),
+        moderationItemKeyboard(campaignId),
+      )
+      return
+    }
+    await edit(chatId, messageId, caption, moderationItemKeyboard(campaignId))
+    return
+  }
+  if (data.startsWith('modok:')) {
+    const campaignId = data.slice(6)
+    const result = await approveCampaign(campaignId, `tg-admin:${fromId}`)
+    if (!result.ok) {
+      await telegramAnswerCallbackQuery(cq.id, result.message, { token: TOKEN, showAlert: true })
+      await edit(chatId, messageId, moderationQueueText(await listModerationQueue()), moderationQueueKeyboard(await listModerationQueue()))
+      return
+    }
+    await edit(
+      chatId,
+      messageId,
+      ['✅ <b>Campaign approved</b>', '', 'It is now ACTIVE and enters the auction immediately.', '', 'Queue after this decision:'].join('\n') +
+        '\n' +
+        moderationQueueText(await listModerationQueue()),
+      moderationQueueKeyboard(await listModerationQueue()),
+    )
+    return
+  }
+  if (data.startsWith('modno:')) {
+    const campaignId = data.slice(6)
+    const items = await listModerationQueue()
+    if (!items.some((i) => i.campaign.id === campaignId)) {
+      await telegramAnswerCallbackQuery(cq.id, 'Not in the queue anymore — refreshing.', { token: TOKEN, showAlert: true })
+      await edit(chatId, messageId, moderationQueueText(items), moderationQueueKeyboard(items))
+      return
+    }
+    await setState(fromId, 'moderation', { moderation: { kind: 'reject-reason', campaignId } })
+    await edit(
+      chatId,
+      messageId,
+      [
+        '❌ <b>Reject this campaign</b>',
+        '',
+        'Send the rejection reason now — the advertiser sees it verbatim in',
+        `their dashboard next to the rejected campaign (${REJECT_REASON_MIN}\u2013${REJECT_REASON_MAX} characters).`,
+        '',
+        '<i>Send /cancel to abort without rejecting.</i>',
+      ].join('\n'),
+      cancelOnlyKeyboard,
+    )
+    return
+  }
+
   // --- everything below needs a parsed draft awaiting confirmation ----------
   if (data === 'back') {
     if (!state || state.step !== 'confirm' || !state.draft.spec) {
@@ -834,6 +995,13 @@ async function handleMessage(update: TelegramUpdate, fromId: string, chatId: str
         )
         return
       }
+      case 'mod': {
+        if (!isAdmin) return void (await deny(chatId))
+        await clearState(fromId)
+        const items = await listModerationQueue()
+        await send(chatId, moderationQueueText(items), moderationQueueKeyboard(items))
+        return
+      }
       case 'grant': {
         if (!isAdmin) return void (await deny(chatId))
         const [email, daysRaw] = args.split(/\s+/)
@@ -864,12 +1032,45 @@ async function handleMessage(update: TelegramUpdate, fromId: string, chatId: str
     return
   }
 
-  // Non-command text → three possible flows, in priority order:
-  //   1. CMS text capture (step 'cms': team wizard / field edits)
-  //   2. bulk paste    (step 'paste' / 'confirm')
-  //   3. hint          (no active state)
+  // Non-command text → four possible flows, in priority order:
+  //   1. Moderation reason capture (step 'moderation': ❌ Reject flow)
+  //   2. CMS text capture (step 'cms': team wizard / field edits)
+  //   3. bulk paste    (step 'paste' / 'confirm')
+  //   4. hint          (no active state)
   if (!isAdmin) return void (await deny(chatId))
   const state = await getState(fromId)
+
+  if (state?.step === 'moderation' && state.draft.moderation?.kind === 'reject-reason') {
+    const target = state.draft.moderation
+    const reason = text.trim()
+    if (reason.length < REJECT_REASON_MIN || reason.length > REJECT_REASON_MAX) {
+      await send(
+        chatId,
+        `⚠️ The reason must be ${REJECT_REASON_MIN}\u2013${REJECT_REASON_MAX} characters (got ${reason.length}). Try again, or /cancel.`,
+      )
+      return
+    }
+    const result = await rejectCampaign(target.campaignId, reason, `tg-admin:${fromId}`)
+    await clearState(fromId)
+    if (!result.ok) {
+      await send(chatId, `⚠️ ${result.message}`, moderationQueueKeyboard(await listModerationQueue()))
+      return
+    }
+    const items = await listModerationQueue()
+    await send(
+      chatId,
+      [
+        '❌ <b>Campaign rejected</b>',
+        '',
+        `Reason stored: <i>${esc(reason)}</i>`,
+        'The advertiser sees it in their dashboard and can edit + resubmit.',
+        '',
+        `Queue after this decision: ${items.length} campaign${items.length === 1 ? '' : 's'}.`,
+      ].join('\n'),
+      moderationQueueKeyboard(items),
+    )
+    return
+  }
 
   if (state?.step === 'cms' && state.draft.cms) {
     await handleCmsText(fromId, chatId, state.draft.cms, text)

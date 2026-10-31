@@ -9,14 +9,17 @@ import { Megaphone } from 'lucide-react'
  *
  * Fetches a winner from /api/ads/serve on mount (50/50 CPC/CPM pool split,
  * weighted-random inside the pool), passing the TARGETING CONTEXT: the
- * active interface locale (always) and the content section (via the
- * `section` prop). Campaigns whose targeting excludes this context never
- * enter the draw. A 204 (ads off, nothing eligible, rate limited) renders
+ * active interface locale (always), the content section (via the
+ * `section` prop) and — new in Phase 2 — the page's keyword context and
+ * hashtags (via `keywords` / `hashtags`; article pages pass the post title
+ * + tags). Campaigns whose targeting excludes this context never enter
+ * the draw. A 204 (ads off, nothing eligible, rate limited) renders
  * NOTHING — a sold-out auction never leaves an empty box on the page.
  *
  * FORMAT (independent of billing):
- *   text   → headline + body + destination host + CTA button
- *   banner → the advertiser's image, edge to edge
+ *   text   → headline + body + display domain + CTA button
+ *   banner → the advertiser's uploaded image, edge to edge (alt text from
+ *            the creative)
  *
  * The rendered card is deliberately distinct from real job posts: a
  * "Sponsored" badge, a gold tinted border and rel="sponsored" so it can
@@ -35,6 +38,7 @@ interface ServedAd {
   title: string | null
   body: string | null
   imageUrl: string | null
+  altText: string | null
   targetUrl: string
   targetHost: string
   bidMicroUsd: number
@@ -73,11 +77,17 @@ export function AdSlot({
   slot,
   variant = 'feed',
   section,
+  keywords,
+  hashtags,
 }: {
   slot: string
   variant?: 'banner' | 'feed' | 'article'
   /** Content section slug ("intern-junior", …) or "home" — targeting context. */
   section?: string
+  /** Page keyword context (article pages: post title + tags). */
+  keywords?: string[]
+  /** Page hashtags (article pages: post tags). */
+  hashtags?: string[]
 }) {
   const t = useTranslations('adSlot')
   const locale = useLocale()
@@ -88,6 +98,10 @@ export function AdSlot({
     let cancelled = false
     const qs = new URLSearchParams({ slot, locale })
     if (section) qs.set('section', section)
+    const kw = keywords && keywords.length > 0 ? keywords.join(',') : ''
+    const tags = hashtags && hashtags.length > 0 ? hashtags.join(',') : ''
+    if (kw) qs.set('keywords', kw)
+    if (tags) qs.set('hashtags', tags)
     fetch(`/api/ads/serve?${qs.toString()}`)
       .then(async (res) => {
         if (!res.ok) return null // 204 or error → no ad
@@ -104,7 +118,9 @@ export function AdSlot({
     return () => {
       cancelled = true
     }
-  }, [slot, locale, section])
+    // String deps: array props would be a fresh reference per parent render
+    // and re-trigger the auction fetch (and its budget holds) forever.
+  }, [slot, locale, section, keywords?.join(','), hashtags?.join(',')])
 
   if (!ad) return null
 
@@ -134,10 +150,11 @@ export function AdSlot({
           <Megaphone width={12} height={12} aria-hidden />
           {t('sponsored')}
         </span>
-        {/* Banner creative — the image IS the ad. */}
+        {/* Banner creative — the image IS the ad. Alt text comes from the
+            creative (accessibility), falling back to the display domain. */}
         <img
           src={ad.imageUrl}
-          alt={ad.targetHost}
+          alt={ad.altText || ad.targetHost}
           className={`w-full object-cover ${BANNER_ASPECT[variant]}`}
           loading="lazy"
         />

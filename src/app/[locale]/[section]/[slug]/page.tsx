@@ -167,8 +167,17 @@ export default async function PostDetailPage({ params }: PageProps) {
           />
 
           {/* Native sponsored card at the end of the material — right before
-              the comments, visually distinct from editorial content. */}
-          <AdSlot slot="article_bottom" variant="article" section={post.section} />
+              the comments, visually distinct from editorial content. The
+              post's title + tags become the page's keyword context and its
+              tags the page hashtags, so keyword/hashtag-targeted campaigns
+              can buy this exact article. */}
+          <AdSlot
+            slot="article_bottom"
+            variant="article"
+            section={post.section}
+            keywords={[post.title, ...serialized.tags]}
+            hashtags={serialized.tags}
+          />
 
           <Comments slug={post.slug} initialCount={commentCount} />
         </article>

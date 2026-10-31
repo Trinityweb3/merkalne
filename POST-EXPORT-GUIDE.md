@@ -174,6 +174,14 @@ bunx prisma migrate deploy         # apply committed migrations (PostgreSQL)
 # is NOT migrated (stats restart at the migration; all rows are QA-era).
 # The local SQLite preview applies the same file via
 #   bun scripts/apply-migration-sql.ts prisma/migrations/0011_ads_phase1_double_entry/migration.sql
+# NOTE (ads Phase 2): migration 0012_ads_phase2_targeting_moderation is PURE
+# ADDITIVE DDL (keyword/country-mode/hashtag CSV columns + keywordMatch,
+# Creative altText/displayDomain/moderationNote). No data transforms; every
+# new column defaults to "no restriction" (keywords/countries/hashtags
+# empty, modes 'all'/'phrase'), so existing campaigns keep serving exactly
+# as before. Existing creatives keep their moderationStatus (approved ones
+# keep serving). `prisma migrate deploy` picks it up automatically on the
+# next docker compose up -d --build.
 bun prisma/seed.ts                 # optional: reference dataset + demo accounts
 
 bun run dev                        # http://localhost:3000

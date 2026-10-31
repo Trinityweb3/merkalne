@@ -2,22 +2,21 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslations } from 'next-intl'
-import { Megaphone, PencilLine, Plus, Target, Trash2, Wallet, X } from 'lucide-react'
+import { Megaphone, PencilLine, Plus, Send, Target, Trash2, Wallet, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Textarea } from '@/components/ui/textarea'
 import { api } from '@/lib/api-client'
 import { LANGUAGES, POST_SECTIONS, SECTION_META } from '@/lib/constants'
 import {
-  BID_BOUNDS,
-  DAILY_BUDGET_BOUNDS,
   type AdFormat,
   type BillingModel,
-  budgetEventEstimate,
   centsToMicro,
   formatMicroUsd,
-  minTotalBudgetCents,
 } from '@/lib/ads/money'
+import {
+  CampaignWizard,
+  type WizardCampaign,
+} from '@/components/site/ads/campaign-wizard'
 
 /**
  * Advertiser dashboard — the "Merklane ADS" tab of the profile cabinet.
@@ -39,6 +38,13 @@ import {
  * Styling deliberately sticks to the legacy template vocabulary (card,
  * stat-grid, chip, badge, field, table-wrap) plus standard Tailwind
  * utilities, so it stays native to the restored original design.
+ *
+ * Phase 2: campaign creation/editing happens in the 5-step
+ * <CampaignWizard/> (Name & Format → Creative → Targeting → Bidding &
+ * Budget → Summary & Submit); this dashboard keeps the wallet, the
+ * campaign list, add-funds and delete. DRAFT and REJECTED campaigns are
+ * listed with their moderation status (and the rejection reason) and can
+ * be re-opened in the wizard or submitted for review directly.
  */
 
 interface Campaign {
@@ -49,12 +55,27 @@ interface Campaign {
   bidMicroUsd: number
   dailyBudgetMicroUsd: number
   totalBudgetMicroUsd: number
-  status: 'active' | 'paused' | 'completed' | 'draft' | 'pending' | string
+  status: 'active' | 'paused' | 'completed' | 'draft' | 'pending' | 'rejected' | string
   deletedAt: string | null
   createdAt: string
   targetSections: string[]
   targetLocales: string[]
-  creative: { title: string | null; body: string | null; imageUrl: string | null; targetUrl: string; version: number } | null
+  targetKeywords: string[]
+  keywordMatch: string
+  countryMode: string
+  targetCountries: string[]
+  targetHashtags: string[]
+  creative: {
+    title: string | null
+    body: string | null
+    imageUrl: string | null
+    altText: string | null
+    displayDomain: string | null
+    targetUrl: string
+    version: number
+    moderationStatus: string
+    moderationNote: string | null
+  } | null
   budget: {
     committedMicroUsd: number
     spentMicroUsd: number
@@ -106,11 +127,6 @@ interface ActiveDeposit {
   coin: string | null
   mode: string
 }
-
-const CPC_BID_CHOICES = [10, 25, 50, 100] // US cents per click
-const CPM_BID_CHOICES = [50, 100, 200, 500] // US cents per 1000 views
-const BUDGET_CHOICES = [100, 500, 1000, 2500] // US cents total budget
-const DAILY_CHOICES = [0, 100, 500, 1000] // US cents per day (0 = no cap)
 
 function money(micro: number): string {
   return formatMicroUsd(micro)
@@ -217,22 +233,11 @@ export function AdsDashboard() {
     setCoin((prev) => (prev && wallet.topUp.coins.includes(prev) ? prev : (wallet.topUp.coins[0] ?? prev)))
   }, [wallet])
 
-  // Campaign create/edit form — FORMAT and BILLING MODEL are independent.
-  const [formOpen, setFormOpen] = useState<null | { mode: 'create' } | { mode: 'edit'; campaign: Campaign }>(null)
-  const [fName, setFName] = useState('')
-  const [fFormat, setFFormat] = useState<AdFormat>('text')
-  const [fBilling, setFBilling] = useState<BillingModel>('cpc')
-  const [fBid, setFBid] = useState('0.50')
-  const [fBudget, setFBudget] = useState('5')
-  const [fDaily, setFDaily] = useState('0')
-  const [fUrl, setFUrl] = useState('')
-  const [fHeadline, setFHeadline] = useState('')
-  const [fBody, setFBody] = useState('')
-  const [fImage, setFImage] = useState('')
-  const [fSections, setFSections] = useState<string[]>([])
-  const [fLocales, setFLocales] = useState<string[]>([])
-  const [formBusy, setFormBusy] = useState(false)
-  const [formError, setFormError] = useState<string | null>(null)
+  // Campaign wizard (Phase 2) — replaces the old single-modal form.
+  // create → the 5-step wizard from scratch; edit → re-open an existing
+  // campaign (draft, rejected, pending, active or paused — anything that
+  // is not completed/deleted).
+  const [wizardOpen, setWizardOpen] = useState<null | { mode: 'create' } | { mode: 'edit'; campaign: Campaign }>(null)
 
   // Add funds (wallet → campaign budget)
   const [fundFor, setFundFor] = useState<Campaign | null>(null)
@@ -304,121 +309,18 @@ export function AdsDashboard() {
   }
 
   // ------------------------------------------------------------ campaign io
-  function openCreate() {
-    setFName('')
-    setFFormat('text')
-    setFBilling('cpc')
-    setFBid('0.50')
-    setFBudget('5')
-    setFDaily('0')
-    setFUrl('')
-    setFHeadline('')
-    setFBody('')
-    setFImage('')
-    setFSections([])
-    setFLocales([])
-    setFormError(null)
-    setFormOpen({ mode: 'create' })
-  }
-
-  function openEdit(c: Campaign) {
-    setFName(c.name)
-    setFFormat(c.format)
-    setFBilling(c.billingModel)
-    setFBid((c.bidMicroUsd / 1_000_000).toFixed(2))
-    setFDaily(c.dailyBudgetMicroUsd > 0 ? (c.dailyBudgetMicroUsd / 1_000_000).toFixed(2) : '0')
-    setFUrl(c.creative?.targetUrl ?? '')
-    setFHeadline(c.creative?.title ?? '')
-    setFBody(c.creative?.body ?? '')
-    setFImage(c.creative?.imageUrl ?? '')
-    setFSections(c.targetSections)
-    setFLocales(c.targetLocales)
-    setFormError(null)
-    setFormOpen({ mode: 'edit', campaign: c })
-  }
-
-  async function submitForm(e: React.FormEvent) {
-    e.preventDefault()
-    if (!formOpen) return
-    setFormError(null)
-
-    const bidCents = dollarsToCents(fBid)
-    const budgetCents = dollarsToCents(fBudget)
-    const dailyCents = dollarsToCents(fDaily || '0')
-
-    // Shared validation — the server re-checks everything; these guards
-    // just keep the modal honest before the round-trip.
-    if (Number.isNaN(bidCents)) return setFormError(t('errorGeneric'))
-    const bounds = BID_BOUNDS[fBilling]
-    if (bidCents < bounds.minCents || bidCents > bounds.maxCents) {
-      return setFormError(fBilling === 'cpc' ? t('bidCpcBounds') : t('bidCpmBounds'))
-    }
-    if (fFormat === 'text' && (fHeadline.trim().length < 3 || fBody.trim().length < 3)) {
-      return setFormError(t('errorGeneric'))
-    }
-    if (fFormat === 'banner' && !/^https:\/\//.test(fImage.trim())) {
-      return setFormError(t('fieldImage'))
-    }
-    if (!/^https:\/\//.test(fUrl.trim())) return setFormError(t('errorGeneric'))
-
-    if (formOpen.mode === 'create') {
-      if (Number.isNaN(budgetCents)) return setFormError(t('errorGeneric'))
-      const min = minTotalBudgetCents(fBilling, bidCents)
-      if (budgetCents < min) {
-        return setFormError(t('budgetMinHint', { min: money(centsToMicro(min)) }))
-      }
-      if (dailyCents !== 0 && dailyCents < DAILY_BUDGET_BOUNDS.minCents) {
-        return setFormError(t('dailyBudgetHint'))
-      }
-      if (dailyCents !== 0 && dailyCents > budgetCents) {
-        return setFormError(t('dailyBudgetHint'))
-      }
-      if (wallet && centsToMicro(budgetCents) > wallet.availableMicroUsd) {
-        return setFormError(t('insufficientWallet'))
-      }
-    } else if (dailyCents !== 0 && dailyCents < DAILY_BUDGET_BOUNDS.minCents) {
-      return setFormError(t('dailyBudgetHint'))
-    }
-
-    setFormBusy(true)
+  async function submitCampaign(c: Campaign) {
+    // Submit a draft/rejected campaign for review straight from the card
+    // (the wizard Step 5 button does the same for edited campaigns).
+    setError(null)
     try {
-      if (formOpen.mode === 'create') {
-        await api('/api/ads/campaigns', {
-          method: 'POST',
-          body: {
-            name: fName,
-            format: fFormat,
-            billingModel: fBilling,
-            bidCents,
-            budgetCents,
-            dailyBudgetCents: dailyCents,
-            targetUrl: fUrl.trim(),
-            ...(fFormat === 'text' ? { headline: fHeadline.trim(), body: fBody.trim() } : { imageUrl: fImage.trim() }),
-            targetSections: fSections,
-            targetLocales: fLocales,
-          },
-        })
-      } else {
-        await api(`/api/ads/campaigns/${formOpen.campaign.id}`, {
-          method: 'PATCH',
-          body: {
-            action: 'update',
-            name: fName,
-            bidCents,
-            dailyBudgetCents: dailyCents,
-            targetUrl: fUrl.trim(),
-            ...(fFormat === 'text' ? { headline: fHeadline.trim(), body: fBody.trim() } : { imageUrl: fImage.trim() }),
-            targetSections: fSections,
-            targetLocales: fLocales,
-          },
-        })
-      }
-      setFormOpen(null)
+      await api(`/api/ads/campaigns/${c.id}`, {
+        method: 'PATCH',
+        body: { action: 'submit' },
+      })
       await refresh()
     } catch (err) {
-      setFormError(err instanceof Error ? err.message : t('errorGeneric'))
-    } finally {
-      setFormBusy(false)
+      setError(err instanceof Error ? err.message : t('errorGeneric'))
     }
   }
 
@@ -540,13 +442,29 @@ export function AdsDashboard() {
           campaigns={campaigns}
           loaded={loaded}
           availableMicro={availableMicro}
-          onCreate={openCreate}
-          onEdit={openEdit}
+          onCreate={() => setWizardOpen({ mode: 'create' })}
+          onEdit={(c) => setWizardOpen({ mode: 'edit', campaign: c })}
+          onSubmit={submitCampaign}
           onFund={openFund}
           onToggle={toggleCampaign}
           onDelete={setDeleteFor}
         />
       )}
+
+      {/* ---------------------------------------------------------------- */}
+      {/* Campaign wizard (Phase 2) — 5 steps: Name & Format → Creative →   */}
+      {/* Targeting → Bidding & Budget → Summary & Submit. Drafts save at  */}
+      {/* any step; submission goes to moderation, never straight live.     */}
+      {/* ---------------------------------------------------------------- */}
+      {wizardOpen ? (
+        <CampaignWizard
+          mode={wizardOpen.mode}
+          campaign={wizardOpen.mode === 'edit' ? (wizardOpen.campaign as WizardCampaign) : undefined}
+          availableMicro={availableMicro}
+          onClose={() => setWizardOpen(null)}
+          onSaved={refresh}
+        />
+      ) : null}
 
       {/* ---------------------------------------------------------------- */}
       {/* Deposit modal (BlockBee / manual) — credits the unified wallet    */}
@@ -669,362 +587,6 @@ export function AdsDashboard() {
         </div>
       ) : null}
 
-      {/* ---------------------------------------------------------------- */}
-      {/* Create / Edit campaign modal — format & billing are independent;  */}
-      {/* the bid is shown in the model's own unit                          */}
-      {/* ---------------------------------------------------------------- */}
-      {formOpen ? (
-        <div
-          className="fixed inset-0 z-[60] grid place-items-center bg-black/60 p-5 backdrop-blur-sm"
-          role="dialog"
-          aria-modal="true"
-          aria-label={formOpen.mode === 'create' ? t('createTitle') : t('editTitle')}
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setFormOpen(null)
-          }}
-        >
-          <div className="card w-full max-w-[560px] shadow-2xl" style={{ maxHeight: '90svh', overflowY: 'auto' }}>
-            <div className="row between">
-              <h3>{formOpen.mode === 'create' ? t('createTitle') : t('editTitle')}</h3>
-              <button type="button" className="icon-button" aria-label={tc('cancel')} onClick={() => setFormOpen(null)}>
-                <X width={16} height={16} aria-hidden />
-              </button>
-            </div>
-
-            <form onSubmit={submitForm} style={{ marginTop: 14 }}>
-              <div className="form-grid">
-                <div className="field span-2">
-                  <label className="field-label" htmlFor="ad-name">
-                    {t('fieldCampaignName')}
-                  </label>
-                  <Input
-                    id="ad-name"
-                    value={fName}
-                    onChange={(e) => setFName(e.target.value)}
-                    placeholder={t('fieldCampaignNamePh')}
-                    maxLength={80}
-                    required
-                  />
-                </div>
-
-                {/* Format — independent of the billing model */}
-                <div className="field span-2">
-                  <label className="field-label">{t('formatLabel')}</label>
-                  <div className="row wrap" style={{ gap: 8 }}>
-                    <button
-                      type="button"
-                      className={`chip ${fFormat === 'text' ? 'selected' : ''}`}
-                      aria-pressed={fFormat === 'text'}
-                      onClick={() => setFFormat('text')}
-                    >
-                      {t('formatText')}
-                    </button>
-                    <button
-                      type="button"
-                      className={`chip ${fFormat === 'banner' ? 'selected' : ''}`}
-                      aria-pressed={fFormat === 'banner'}
-                      onClick={() => setFFormat('banner')}
-                    >
-                      {t('formatBanner')}
-                    </button>
-                  </div>
-                </div>
-
-                {/* Billing model — independent of the format */}
-                <div className="field span-2">
-                  <label className="field-label">{t('billingLabel')}</label>
-                  <div className="row wrap" style={{ gap: 8 }}>
-                    <button
-                      type="button"
-                      className={`chip ${fBilling === 'cpc' ? 'selected' : ''}`}
-                      aria-pressed={fBilling === 'cpc'}
-                      onClick={() => setFBilling('cpc')}
-                    >
-                      {t('billingCpc')}
-                    </button>
-                    <button
-                      type="button"
-                      className={`chip ${fBilling === 'cpm' ? 'selected' : ''}`}
-                      aria-pressed={fBilling === 'cpm'}
-                      onClick={() => setFBilling('cpm')}
-                    >
-                      {t('billingCpm')}
-                    </button>
-                  </div>
-                  <small className="muted">{t('bidHint')}</small>
-                </div>
-
-                {/* Bid — in the model's unit ($/click or $/1000 views) */}
-                <div className="field span-2">
-                  <label className="field-label" htmlFor="ad-bid">
-                    {t('fieldBid')} ({fBilling === 'cpc' ? t('bidSuffixCpc') : t('bidSuffixCpm')})
-                  </label>
-                  <div className="row wrap" style={{ gap: 8 }}>
-                    {(fBilling === 'cpc' ? CPC_BID_CHOICES : CPM_BID_CHOICES).map((cents) => (
-                      <button
-                        type="button"
-                        key={cents}
-                        className={`chip ${dollarsToCents(fBid) === cents ? 'selected' : ''}`}
-                        aria-pressed={dollarsToCents(fBid) === cents}
-                        onClick={() => setFBid((cents / 100).toFixed(2))}
-                      >
-                        {centsMoney(cents)}
-                      </button>
-                    ))}
-                  </div>
-                  <Input
-                    id="ad-bid"
-                    type="number"
-                    min={fBilling === 'cpc' ? BID_BOUNDS.cpc.minCents / 100 : BID_BOUNDS.cpm.minCents / 100}
-                    max={fBilling === 'cpc' ? BID_BOUNDS.cpc.maxCents / 100 : BID_BOUNDS.cpm.maxCents / 100}
-                    step={0.01}
-                    value={fBid}
-                    onChange={(e) => setFBid(e.target.value)}
-                    required
-                    style={{ marginTop: 8 }}
-                  />
-                  <small className="muted">{fBilling === 'cpc' ? t('bidCpcBounds') : t('bidCpmBounds')}</small>
-                </div>
-
-                {/* Creative fields follow the chosen format */}
-                {fFormat === 'text' ? (
-                  <>
-                    <div className="field span-2">
-                      <label className="field-label" htmlFor="ad-headline">
-                        {t('fieldTitle')}
-                      </label>
-                      <Input
-                        id="ad-headline"
-                        value={fHeadline}
-                        onChange={(e) => setFHeadline(e.target.value)}
-                        placeholder={t('fieldTitlePh')}
-                        maxLength={80}
-                        required
-                      />
-                    </div>
-                    <div className="field span-2">
-                      <label className="field-label" htmlFor="ad-body">
-                        {t('fieldBody')}
-                      </label>
-                      <Textarea
-                        id="ad-body"
-                        value={fBody}
-                        onChange={(e) => setFBody(e.target.value)}
-                        placeholder={t('fieldBodyPh')}
-                        maxLength={200}
-                        rows={3}
-                        required
-                      />
-                    </div>
-                  </>
-                ) : (
-                  <div className="field span-2">
-                    <label className="field-label" htmlFor="ad-image">
-                      {t('fieldImage')}
-                    </label>
-                    <Input
-                      id="ad-image"
-                      type="url"
-                      value={fImage}
-                      onChange={(e) => setFImage(e.target.value)}
-                      placeholder={t('fieldImagePh')}
-                      required
-                    />
-                  </div>
-                )}
-
-                <div className="field span-2">
-                  <label className="field-label" htmlFor="ad-url">
-                    {t('fieldUrl')}
-                  </label>
-                  <Input
-                    id="ad-url"
-                    type="url"
-                    value={fUrl}
-                    onChange={(e) => setFUrl(e.target.value)}
-                    placeholder="https://"
-                    required
-                  />
-                </div>
-
-                {formOpen.mode === 'create' ? (
-                  <>
-                    <div className="field span-2">
-                      <label className="field-label" htmlFor="ad-budget">
-                        {t('budgetLabel')}
-                      </label>
-                      <div className="row wrap" style={{ gap: 8 }}>
-                        {BUDGET_CHOICES.map((cents) => (
-                          <button
-                            type="button"
-                            key={cents}
-                            className={`chip ${dollarsToCents(fBudget) === cents ? 'selected' : ''}`}
-                            aria-pressed={dollarsToCents(fBudget) === cents}
-                            disabled={centsToMicro(cents) > availableMicro}
-                            onClick={() => setFBudget((cents / 100).toFixed(0))}
-                          >
-                            {centsMoney(cents)}
-                          </button>
-                        ))}
-                      </div>
-                      <Input
-                        id="ad-budget"
-                        type="number"
-                        min={minTotalBudgetCents(fBilling, dollarsToCents(fBid) || 1) / 100}
-                        max={Math.max(availableMicro / 10_000, 100) / 100}
-                        step={0.5}
-                        value={fBudget}
-                        onChange={(e) => setFBudget(e.target.value)}
-                        required
-                        style={{ marginTop: 8 }}
-                      />
-                      <small className="muted">
-                        {t('budgetWalletHint', { amount: money(availableMicro) })}
-                        {' · '}
-                        {fBilling === 'cpc'
-                          ? t('estClicks', {
-                              count: budgetEventEstimate('cpc', dollarsToCents(fBudget) || 0, dollarsToCents(fBid) || 1),
-                            })
-                          : t('estViews', {
-                              count: budgetEventEstimate('cpm', dollarsToCents(fBudget) || 0, dollarsToCents(fBid) || 1),
-                            })}
-                      </small>
-                    </div>
-
-                    <div className="field span-2">
-                      <label className="field-label" htmlFor="ad-daily">
-                        {t('dailyBudgetLabel')}
-                      </label>
-                      <div className="row wrap" style={{ gap: 8 }}>
-                        {DAILY_CHOICES.map((cents) => (
-                          <button
-                            type="button"
-                            key={cents}
-                            className={`chip ${dollarsToCents(fDaily || '0') === cents ? 'selected' : ''}`}
-                            aria-pressed={dollarsToCents(fDaily || '0') === cents}
-                            onClick={() => setFDaily(cents === 0 ? '0' : (cents / 100).toFixed(2))}
-                          >
-                            {cents === 0 ? t('dailyNoCap') : centsMoney(cents)}
-                          </button>
-                        ))}
-                      </div>
-                      <Input
-                        id="ad-daily"
-                        type="number"
-                        min={0}
-                        step={0.5}
-                        value={fDaily}
-                        onChange={(e) => setFDaily(e.target.value)}
-                        style={{ marginTop: 8 }}
-                      />
-                      <small className="muted">{t('dailyBudgetHint')}</small>
-                    </div>
-                  </>
-                ) : (
-                  <div className="field span-2">
-                    <label className="field-label" htmlFor="ad-daily">
-                      {t('dailyBudgetLabel')}
-                    </label>
-                    <div className="row wrap" style={{ gap: 8 }}>
-                      {DAILY_CHOICES.map((cents) => (
-                        <button
-                          type="button"
-                          key={cents}
-                          className={`chip ${dollarsToCents(fDaily || '0') === cents ? 'selected' : ''}`}
-                          aria-pressed={dollarsToCents(fDaily || '0') === cents}
-                          onClick={() => setFDaily(cents === 0 ? '0' : (cents / 100).toFixed(2))}
-                        >
-                          {cents === 0 ? t('dailyNoCap') : centsMoney(cents)}
-                        </button>
-                      ))}
-                    </div>
-                    <Input
-                      id="ad-daily"
-                      type="number"
-                      min={0}
-                      step={0.5}
-                      value={fDaily}
-                      onChange={(e) => setFDaily(e.target.value)}
-                      style={{ marginTop: 8 }}
-                    />
-                    <small className="muted">{t('dailyBudgetHint')}</small>
-                  </div>
-                )}
-
-                {/* ------------------------- Targeting ------------------------ */}
-                <div className="field span-2" style={{ borderTop: '1px solid var(--border)', paddingTop: 14 }}>
-                  <label className="field-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <Target width={14} height={14} aria-hidden /> {t('targetingTitle')}
-                  </label>
-                  <small className="muted" style={{ display: 'block', marginBottom: 10 }}>
-                    {t('targetingHint')}
-                  </small>
-
-                  <p className="tiny" style={{ marginBottom: 6 }}>
-                    {t('targetSectionsLabel')}{' '}
-                    <span className="muted">
-                      ({fSections.length}/{SECTION_OPTIONS.length})
-                    </span>
-                  </p>
-                  <div className="row wrap" style={{ gap: 8, marginBottom: 12 }}>
-                    {SECTION_OPTIONS.map((s) => (
-                      <button
-                        type="button"
-                        key={s.value}
-                        className={`chip ${fSections.includes(s.value) ? 'selected' : ''}`}
-                        aria-pressed={fSections.includes(s.value)}
-                        onClick={() => setFSections((prev) => toggleIn(prev, s.value))}
-                      >
-                        {s.label}
-                      </button>
-                    ))}
-                  </div>
-
-                  <p className="tiny" style={{ marginBottom: 6 }}>
-                    {t('targetLocalesLabel')}{' '}
-                    <span className="muted">
-                      ({fLocales.length}/{LOCALE_OPTIONS.length})
-                    </span>
-                  </p>
-                  <div className="row wrap" style={{ gap: 8 }}>
-                    {LOCALE_OPTIONS.map((l) => (
-                      <button
-                        type="button"
-                        key={l.value}
-                        className={`chip ${fLocales.includes(l.value) ? 'selected' : ''}`}
-                        aria-pressed={fLocales.includes(l.value)}
-                        onClick={() => setFLocales((prev) => toggleIn(prev, l.value))}
-                      >
-                        {l.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-
-              {formError ? (
-                <p className="negative small" role="alert" style={{ marginTop: 12 }}>
-                  {formError}
-                </p>
-              ) : null}
-
-              <div className="button-row" style={{ marginTop: 18 }}>
-                <Button type="submit" disabled={formBusy}>
-                  {formOpen.mode === 'create' ? (
-                    <>
-                      <Plus width={15} height={15} aria-hidden /> {formBusy ? tc('loading') : t('createBtn')}
-                    </>
-                  ) : (
-                    <>
-                      <PencilLine width={15} height={15} aria-hidden /> {formBusy ? tc('loading') : t('saveBtn')}
-                    </>
-                  )}
-                </Button>
-              </div>
-            </form>
-          </div>
-        </div>
-      ) : null}
 
       {/* ---------------------------------------------------------------- */}
       {/* Add funds modal (wallet → campaign budget)                        */}
@@ -1298,6 +860,7 @@ function CampaignsView({
   availableMicro,
   onCreate,
   onEdit,
+  onSubmit,
   onFund,
   onToggle,
   onDelete,
@@ -1307,12 +870,45 @@ function CampaignsView({
   availableMicro: number
   onCreate: () => void
   onEdit: (c: Campaign) => void
+  /** Submit a draft/rejected campaign for review (PATCH action "submit"). */
+  onSubmit: (c: Campaign) => void
   onFund: (c: Campaign) => void
   onToggle: (c: Campaign) => void
   onDelete: (c: Campaign) => void
 }) {
   const t = useTranslations('ads')
   const tc = useTranslations('common')
+
+  /** Status badge in the legacy vocabulary: active=green, review=amber
+   *  text, draft=muted, rejected=negative. */
+  function statusBadge(c: Campaign) {
+    const cls =
+      c.status === 'active'
+        ? 'state-active'
+        : c.status === 'pending'
+          ? 'state-under-review'
+          : c.status === 'rejected'
+            ? 'negative'
+            : 'state-draft' // draft / paused / completed
+    const label =
+      c.status === 'active'
+        ? t('statusActive')
+        : c.status === 'pending'
+          ? t('statusPending')
+          : c.status === 'rejected'
+            ? t('statusRejected')
+            : c.status === 'draft'
+              ? t('statusDraft')
+              : c.status === 'paused'
+                ? t('statusPaused')
+                : t('statusCompleted')
+    return (
+      <span className={`badge ${cls}`}>
+        {label}
+        {c.creative ? ` · v${c.creative.version}` : ''}
+      </span>
+    )
+  }
 
   return (
     <div>
@@ -1359,6 +955,10 @@ function CampaignsView({
             const perEvent = isCpc ? c.bidMicroUsd : Math.floor(c.bidMicroUsd / 1000)
             const resumable = c.status === 'paused' && c.budget.remainingMicroUsd >= perEvent
             const completed = c.status === 'completed' || c.deletedAt !== null
+            // Soft-deleted rows keep their original status label but are
+            // read-only like completed ones.
+            const editable = !completed
+            const submittable = c.status === 'draft' || c.status === 'rejected'
             const targets = [
               c.targetSections.length > 0
                 ? `${c.targetSections.length}/${SECTION_OPTIONS.length} ${t('targetSectionsLabel')}`
@@ -1366,37 +966,52 @@ function CampaignsView({
               c.targetLocales.length > 0
                 ? `${c.targetLocales.length}/${LOCALE_OPTIONS.length} ${t('targetLocalesLabel')}`
                 : null,
+              c.targetKeywords.length > 0
+                ? `${c.targetKeywords.length} ${t('keywordsLabel')}`
+                : null,
+              c.targetHashtags.length > 0
+                ? `${c.targetHashtags.length} ${t('hashtagsLabel')}`
+                : null,
+              c.countryMode !== 'all' && c.targetCountries.length > 0
+                ? `${c.targetCountries.length} ${t('countriesLabel')}`
+                : null,
             ].filter(Boolean)
             return (
               <div className="card ads-campaign" key={c.id}>
                 <div className="row between wrap" style={{ gap: 10 }}>
                   <strong className="text-[1.05rem] tracking-tight">{c.name}</strong>
-                  <span
-                    className={`badge ${
-                      c.status === 'active'
-                        ? 'state-active'
-                        : c.status === 'paused'
-                          ? 'state-draft'
-                          : 'state-under-review'
-                    }`}
-                  >
-                    {c.status === 'active'
-                      ? t('statusActive')
-                      : c.status === 'paused'
-                        ? t('statusPaused')
-                        : t('statusCompleted')}
-                  </span>
+                  {statusBadge(c)}
                 </div>
                 <p className="muted small" style={{ marginTop: 6 }}>
-                  {c.creative?.title ?? c.creative?.imageUrl ?? '—'}
+                  {c.format === 'banner' && c.creative?.imageUrl ? (
+                    <img
+                      src={c.creative.imageUrl}
+                      alt={c.creative.altText ?? c.name}
+                      className="max-h-24 w-full rounded-md object-cover"
+                      loading="lazy"
+                    />
+                  ) : (
+                    (c.creative?.title ?? '—')
+                  )}
                 </p>
+                {c.status === 'rejected' && c.creative?.moderationNote ? (
+                  <p className="negative small" role="alert" style={{ marginTop: 6 }}>
+                    {t('wizardRejectedNote', { reason: c.creative.moderationNote })}
+                  </p>
+                ) : null}
+                {c.status === 'pending' ? (
+                  <p className="muted tiny" style={{ marginTop: 6 }}>
+                    {t('inReviewNote')}
+                  </p>
+                ) : null}
                 <p className="tiny muted" style={{ marginTop: 4, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                   <Target width={12} height={12} aria-hidden />
                   {c.format === 'text' ? t('formatText') : t('formatBanner')} · {isCpc ? t('badgeCpc') : t('badgeCpm')} ·{' '}
                   {t(c.billingModel === 'cpc' ? 'bidLineCpc' : 'bidLineCpm', {
                     amount: money(c.bidMicroUsd),
                   })}
-                  {targets.length === 0 ? '' : ` · ${targets.join(' · ')}`} · {hostOf(c.creative?.targetUrl ?? '')}
+                  {targets.length === 0 ? '' : ` · ${targets.join(' · ')}`} ·{' '}
+                  {c.creative?.displayDomain || hostOf(c.creative?.targetUrl ?? '')}
                 </p>
                 <div className="stat-grid" style={{ marginTop: 14 }}>
                   <div className="stat">
@@ -1424,21 +1039,35 @@ function CampaignsView({
                   </p>
                 ) : null}
                 <div className="row wrap" style={{ marginTop: 14 }}>
+                  {submittable ? (
+                    <Button variant="outline" onClick={() => onSubmit(c)}>
+                      <Send width={15} height={15} aria-hidden />
+                      {t('submitReviewBtn')}
+                    </Button>
+                  ) : null}
+                  {c.status === 'active' || c.status === 'paused' ? (
+                    <Button
+                      variant="outline"
+                      onClick={() => onToggle(c)}
+                      disabled={c.status === 'paused' && !resumable}
+                    >
+                      {c.status === 'active' ? t('pause') : t('resume')}
+                    </Button>
+                  ) : null}
                   <Button
                     variant="outline"
-                    onClick={() => onToggle(c)}
-                    disabled={completed || (c.status === 'paused' && !resumable)}
+                    onClick={() => onFund(c)}
+                    disabled={completed || c.status === 'draft' || availableMicro < 100 * 10_000}
                   >
-                    {c.status === 'active' ? t('pause') : t('resume')}
-                  </Button>
-                  <Button variant="outline" onClick={() => onFund(c)} disabled={completed || availableMicro < 100 * 10_000}>
                     <Wallet width={15} height={15} aria-hidden />
                     {t('addFundsBtn')}
                   </Button>
-                  <Button variant="outline" onClick={() => onEdit(c)} disabled={completed}>
-                    <PencilLine width={15} height={15} aria-hidden />
-                    {t('editBtn')}
-                  </Button>
+                  {editable ? (
+                    <Button variant="outline" onClick={() => onEdit(c)}>
+                      <PencilLine width={15} height={15} aria-hidden />
+                      {t('editBtn')}
+                    </Button>
+                  ) : null}
                   {!completed ? (
                     <Button variant="outline" onClick={() => onDelete(c)}>
                       <Trash2 width={15} height={15} aria-hidden />

@@ -14,8 +14,9 @@
  *   remaining = committed(|reserve| − refund) − spent(|charge|) − held
  *
  * plus the daily cap (dailyBudgetMicroUsd, 0 = none): today's charges plus
- * in-flight holds must still leave room for this event. Targeting (sections
- * + interface languages — Phase 1 scope) filters against the serving page.
+ * in-flight holds must still leave room for this event. Targeting — sections
+ * + interface languages (Phase 1), contextual keywords, hashtags and the
+ * visitor country (Phase 2) — filters against the serving page.
  *
  * BILLING — every billable event is a BudgetReservation:
  *
@@ -257,7 +258,10 @@ export interface ServedAd {
   title: string | null
   body: string | null
   imageUrl: string | null
+  /** Banner accessibility label (alt text). */
+  altText: string | null
   targetUrl: string
+  /** Advertiser's display domain, falling back to the target URL's host. */
   targetHost: string
   bidMicroUsd: number
 }
@@ -287,6 +291,11 @@ export async function serveAd(_slot: string, ctx: AdRequestContext = {}): Promis
         dailyBudgetMicroUsd: true,
         targetSections: true,
         targetLocales: true,
+        targetKeywords: true,
+        keywordMatch: true,
+        countryMode: true,
+        targetCountries: true,
+        targetHashtags: true,
         creatives: {
           where: { moderationStatus: 'approved' },
           orderBy: { version: 'desc' },
@@ -313,7 +322,7 @@ export async function serveAd(_slot: string, ctx: AdRequestContext = {}): Promis
         const dailyUsed = state.spentTodayMicroUsd + state.heldMicroUsd
         if (dailyUsed + perEvent > c.dailyBudgetMicroUsd) continue // daily cap reached
       }
-      if (!targetingMatches(c.targetSections, c.targetLocales, ctx)) continue
+      if (!targetingMatches(c, ctx)) continue
       if (c.creatives.length === 0) continue // nothing approved to render
       eligible.push({ id: c.id, bidMicroUsd: c.bidMicroUsd, billingModel: model, campaign: c, state, perEvent })
     }
@@ -366,7 +375,14 @@ class ChargeGuardFailed extends Error {
 
 function toServedAd(
   campaign: Pick<Campaign, 'id' | 'format' | 'billingModel' | 'bidMicroUsd'>,
-  creative: { title: string | null; body: string | null; imageUrl: string | null; targetUrl: string },
+  creative: {
+    title: string | null
+    body: string | null
+    imageUrl: string | null
+    altText: string | null
+    displayDomain: string | null
+    targetUrl: string
+  },
   reservationId: string,
 ): ServedAd {
   return {
@@ -377,8 +393,11 @@ function toServedAd(
     title: creative?.title ?? null,
     body: creative?.body ?? null,
     imageUrl: creative?.imageUrl ?? null,
+    altText: creative?.altText ?? null,
     targetUrl: creative.targetUrl,
-    targetHost: hostOf(creative.targetUrl),
+    // The advertiser's friendly display domain wins; the real destination
+    // host is the fallback (and the href always stays the honest targetUrl).
+    targetHost: creative?.displayDomain?.trim() || hostOf(creative.targetUrl),
     bidMicroUsd: campaign.bidMicroUsd,
   }
 }

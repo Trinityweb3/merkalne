@@ -9,6 +9,7 @@ import { expireStaleReservations, campaignStats, campaignBudgetStates } from '@/
 import { TOPUP_MAX_CENTS, TOPUP_MIN_CENTS, topUpMode } from '@/lib/ads/topup'
 import { allowedCoins } from '@/lib/ads/blockbee'
 import { reserveCampaignBudget } from '@/lib/ads/wallet'
+import { submitCampaignForReview } from '@/lib/ads/moderation'
 import {
   BID_BOUNDS,
   DAILY_BUDGET_BOUNDS,
@@ -19,11 +20,29 @@ import {
   type AdFormat,
   type BillingModel,
 } from '@/lib/ads/money'
-import { parseTargetingCsv, toTargetingCsv } from '@/lib/ads/targeting'
+import {
+  MAX_COUNTRIES,
+  MAX_HASHTAGS,
+  MAX_KEYWORDS,
+  parseCountryInput,
+  parseHashtagInput,
+  parseKeywordInput,
+  parseTargetingCsv,
+  toTargetingCsv,
+} from '@/lib/ads/targeting'
 
 export const dynamic = 'force-dynamic'
 
 const MAX_ACTIVE_CAMPAIGNS = 12
+/** Drafts are free (no money locked) but capped so they cannot pile up. */
+const MAX_DRAFT_CAMPAIGNS = 25
+
+/**
+ * Banner creatives must be a LOCAL upload path produced by
+ * /api/ads/assets/upload — external image URLs are not accepted anymore
+ * (Phase 2: real uploads only, content-validated by magic bytes).
+ */
+const LOCAL_BANNER_PATH = /^\/uploads\/ads\/[a-f0-9-]{8,}\.(png|jpe?g|webp)$/
 
 const createSchema = z.object({
   /** Internal/administrative name shown in the dashboard. */
@@ -38,31 +57,52 @@ const createSchema = z.object({
   budgetCents: z.coerce.number().int().min(1).max(TOTAL_BUDGET_BOUNDS.maxCents),
   /** Per-UTC-day spend cap; 0 = no daily cap. */
   dailyBudgetCents: z.coerce.number().int().min(0).max(DAILY_BUDGET_BOUNDS.maxCents).default(0),
+  /**
+   * Phase 2 lifecycle: false (default) creates a DRAFT — free, editable,
+   * no wallet money locked. true submits it for review right away: the
+   * budget is reserved from the wallet and the campaign goes to PENDING.
+   */
+  submit: z.boolean().default(false),
   /** https destination every click opens. */
   targetUrl: z
     .string()
     .trim()
     .url()
     .regex(/^https:\/\//, 'The destination URL must use https'),
-  /** Text format: card headline + body. */
-  headline: z.string().trim().min(3).max(80).optional(),
-  body: z.string().trim().min(3).max(200).optional(),
-  /** Banner format: https image URL. */
-  imageUrl: z
+  /** Text format: card headline + body (Phase 2 limits: 120 / 500). */
+  headline: z.string().trim().min(3).max(120).optional(),
+  body: z.string().trim().min(3).max(500).optional(),
+  /** Text format: optional friendly domain rendered on the card. */
+  displayDomain: z
     .string()
     .trim()
-    .url()
-    .regex(/^https:\/\//, 'The image URL must use https')
-    .optional(),
-  /** Targeting — empty array = no restriction (show everywhere). */
+    .max(80)
+    .regex(/^[a-z0-9.-]+\.[a-z]{2,}$/i, 'The display domain must look like a host, no scheme')
+    .optional()
+    .or(z.literal('')),
+  /** Banner format: LOCAL upload path (/uploads/ads/<uuid>.png|jpg|webp). */
+  imageUrl: z.string().trim().regex(LOCAL_BANNER_PATH, 'The banner must be uploaded (PNG, JPEG or WebP)').optional(),
+  /** Banner format: accessibility label. */
+  altText: z.string().trim().min(2).max(120).optional(),
+  /** Targeting — empty arrays = no restriction (show everywhere). */
   targetSections: z.array(z.string().trim().toLowerCase().min(2).max(40)).max(6).default([]),
   targetLocales: z.array(z.string().trim().toLowerCase().min(2).max(8)).max(20).default([]),
+  targetKeywords: z.array(z.string().trim().min(2).max(60)).max(MAX_KEYWORDS).default([]),
+  keywordMatch: z.enum(['phrase', 'exact']).default('phrase'),
+  targetCountries: z.array(z.string().trim().min(2).max(2)).max(MAX_COUNTRIES).default([]),
+  countryMode: z.enum(['all', 'include', 'exclude']).default('all'),
+  targetHashtags: z.array(z.string().trim().min(2).max(40)).max(MAX_HASHTAGS).default([]),
 })
 
 /**
  * GET /api/ads/campaigns — the signed-in advertiser's campaigns with
  * ledger-derived budget state, per-model delivery stats and the active
  * top-up configuration (mode + offered coins + limits).
+ *
+ * Phase 2: the payload now carries the LATEST creative of every campaign
+ * regardless of its moderation status (so drafts and rejections can be
+ * re-opened in the wizard), each with moderationStatus + moderationNote,
+ * plus the advanced targeting selections.
  */
 export async function GET() {
   try {
@@ -77,7 +117,8 @@ export async function GET() {
       orderBy: { createdAt: 'desc' },
       include: {
         creatives: {
-          where: { moderationStatus: 'approved' },
+          // Latest revision, whatever its moderation status — the wizard
+          // needs to re-open drafts and rejections too.
           orderBy: { version: 'desc' },
           take: 1,
         },
@@ -104,13 +145,22 @@ export async function GET() {
           createdAt: c.createdAt.toISOString(),
           targetSections: parseTargetingCsv(c.targetSections),
           targetLocales: parseTargetingCsv(c.targetLocales),
+          targetKeywords: parseTargetingCsv(c.targetKeywords),
+          keywordMatch: c.keywordMatch,
+          countryMode: c.countryMode,
+          targetCountries: c.targetCountries ? parseTargetingCsv(c.targetCountries).map((x) => x.toUpperCase()) : [],
+          targetHashtags: parseTargetingCsv(c.targetHashtags),
           creative: creative
             ? {
                 title: creative.title,
                 body: creative.body,
                 imageUrl: creative.imageUrl,
+                altText: creative.altText,
+                displayDomain: creative.displayDomain,
                 targetUrl: creative.targetUrl,
                 version: creative.version,
+                moderationStatus: creative.moderationStatus,
+                moderationNote: creative.moderationNote,
               }
             : null,
           budget: {
@@ -143,24 +193,23 @@ export async function GET() {
 }
 
 /**
- * POST /api/ads/campaigns — create a campaign, allocating its total budget
- * from the unified Wallet.
+ * POST /api/ads/campaigns — create a campaign from the wizard.
  *
- * The wallet-first flow: the advertiser deposits crypto in the Wallet tab
- * (BlockBee → Wallet.availableMicroUsd + CREDIT ledger row), then creates a
- * campaign here choosing FORMAT (text/banner) and BILLING MODEL (cpc/cpm)
- * independently, the bid, the daily cap, the targeting and the total budget.
+ * Phase 2 lifecycle (no campaign ever jumps to ACTIVE from the API):
+ *   • submit=false (default) → DRAFT. Free: no wallet money is locked, the
+ *     planned budget is stored on the row and reserved only when the
+ *     campaign is submitted for review. Drafts stay editable.
+ *   • submit=true → the draft is created AND submitted in one atomic
+ *     transaction: the budget moves wallet → campaign (Phase 1 ledger
+ *     service), the campaign enters PENDING and waits for a moderator.
  *
  * Validation (server-side, mirrors of src/lib/ads/money.ts):
- *   • the creative fields must match the chosen format
+ *   • the creative fields must match the chosen format (banners must
+ *     reference a LOCAL upload; external image URLs are no longer accepted)
  *   • the bid must be inside the per-model bounds
  *   • the budget must cover the minimum flight (≥ $1 AND ≥ 20 billable events)
  *   • the daily cap (when set) must be ≥ $1 and ≤ the total budget
- *   • the wallet must actually hold the budget
- *
- * The transfer (wallet → campaign budget) is one transaction whose first
- * statement is a conditional decrement (never overdraws the wallet). The
- * campaign starts ACTIVE — it is funded, so it serves immediately.
+ *   • on submit, the wallet must actually hold the budget
  */
 export async function POST(req: Request) {
   try {
@@ -184,7 +233,10 @@ export async function POST(req: Request) {
       return jsonError('Text campaigns need a headline and body copy.', 400, { code: 'creative_missing' })
     }
     if (format === 'banner' && !d.imageUrl) {
-      return jsonError('Banner campaigns need an image URL.', 400, { code: 'creative_missing' })
+      return jsonError('Banner campaigns need an uploaded image.', 400, { code: 'creative_missing' })
+    }
+    if (format === 'banner' && !d.altText) {
+      return jsonError('Banner campaigns need alt text (accessibility label).', 400, { code: 'creative_missing' })
     }
 
     // ---- bid bounds per model ----------------------------------------------
@@ -221,18 +273,42 @@ export async function POST(req: Request) {
       }
     }
 
-    const activeCount = await db.campaign.count({
-      where: { advertiserId: session.user.id, deletedAt: null, status: { in: ['active', 'paused'] } },
-    })
+    // ---- per-state quotas ------------------------------------------------------
+    const [activeCount, draftCount] = await Promise.all([
+      db.campaign.count({
+        where: { advertiserId: session.user.id, deletedAt: null, status: { in: ['active', 'paused', 'pending'] } },
+      }),
+      db.campaign.count({
+        where: { advertiserId: session.user.id, deletedAt: null, status: { in: ['draft', 'rejected'] } },
+      }),
+    ])
     if (activeCount >= MAX_ACTIVE_CAMPAIGNS) {
       return jsonError(
         `Campaign limit reached (${MAX_ACTIVE_CAMPAIGNS}) — delete or pause an old one first.`,
         400,
       )
     }
+    if (draftCount >= MAX_DRAFT_CAMPAIGNS) {
+      return jsonError(
+        `You already have ${MAX_DRAFT_CAMPAIGNS} draft/rejected campaigns — submit or delete some first.`,
+        400,
+        { code: 'draft_limit' },
+      )
+    }
 
     const targetSections = toTargetingCsv(d.targetSections)
     const targetLocales = toTargetingCsv(d.targetLocales)
+    const targetKeywords = parseKeywordInput(d.targetKeywords).join(',')
+    const keywordMatch = d.keywordMatch
+    const countryMode = d.countryMode
+    const targetCountries = countryMode === 'all' ? '' : parseCountryInput(d.targetCountries).join(',')
+    const targetHashtags = parseHashtagInput(d.targetHashtags).join(',')
+    if (countryMode !== 'all' && targetCountries === '') {
+      return jsonError('Pick at least one country for include/exclude targeting.', 400, {
+        code: 'targeting_invalid',
+      })
+    }
+
     const budgetMicroUsd = centsToMicro(d.budgetCents)
     const bidMicroUsd = centsToMicro(d.bidCents)
     const dailyBudgetMicroUsd = centsToMicro(d.dailyBudgetCents)
@@ -241,8 +317,47 @@ export async function POST(req: Request) {
     const campaignId = crypto.randomUUID()
 
     const campaign = await db.$transaction(async (tx) => {
-      // Conditional wallet decrement — the overdraw guard. count 0 means
-      // the wallet cannot cover the budget: nothing is created.
+      if (!d.submit) {
+        // Draft: nothing touches the wallet. The planned budget rides on
+        // the row (totalBudgetMicroUsd) and is reserved at submit time.
+        return await tx.campaign.create({
+          data: {
+            id: campaignId,
+            advertiserId: session.user.id,
+            name: d.name,
+            format,
+            billingModel,
+            bidMicroUsd,
+            dailyBudgetMicroUsd,
+            totalBudgetMicroUsd: budgetMicroUsd,
+            status: 'draft',
+            targetSections,
+            targetLocales,
+            targetKeywords,
+            keywordMatch,
+            countryMode,
+            targetCountries,
+            targetHashtags,
+            creatives: {
+              create: {
+                moderationStatus: 'draft',
+                version: 1,
+                title: format === 'text' ? d.headline! : null,
+                body: format === 'text' ? d.body! : null,
+                imageUrl: format === 'banner' ? d.imageUrl! : null,
+                altText: format === 'banner' ? d.altText! : null,
+                displayDomain: d.displayDomain ? d.displayDomain : null,
+                targetUrl: d.targetUrl,
+              },
+            },
+          },
+          include: { creatives: true },
+        })
+      }
+
+      // Create + submit in ONE transaction: reserve the budget from the
+      // wallet (conditional decrement — never overdraws), then flip the
+      // fresh draft straight into review.
       const reserved = await reserveCampaignBudget(tx, {
         userId: session.user.id,
         campaignId,
@@ -251,7 +366,7 @@ export async function POST(req: Request) {
       })
       if (!reserved.ok) return null
 
-      return await tx.campaign.create({
+      const created = await tx.campaign.create({
         data: {
           id: campaignId,
           advertiserId: session.user.id,
@@ -261,24 +376,34 @@ export async function POST(req: Request) {
           bidMicroUsd,
           dailyBudgetMicroUsd,
           totalBudgetMicroUsd: budgetMicroUsd,
-          // Funded at creation → live immediately.
-          status: 'active',
+          status: 'pending',
           targetSections,
           targetLocales,
+          targetKeywords,
+          keywordMatch,
+          countryMode,
+          targetCountries,
+          targetHashtags,
           creatives: {
             create: {
-              // Phase 1 auto-approves (no moderation queue yet).
-              moderationStatus: 'approved',
+              moderationStatus: 'pending',
               version: 1,
               title: format === 'text' ? d.headline! : null,
               body: format === 'text' ? d.body! : null,
               imageUrl: format === 'banner' ? d.imageUrl! : null,
+              altText: format === 'banner' ? d.altText! : null,
+              displayDomain: d.displayDomain ? d.displayDomain : null,
               targetUrl: d.targetUrl,
             },
           },
         },
         include: { creatives: true },
       })
+
+      // Created straight into PENDING with the budget already reserved —
+      // the same end state submitCampaignForReview produces, reached in
+      // one transaction (the campaign never existed as a visible draft).
+      return created
     })
 
     if (!campaign) {

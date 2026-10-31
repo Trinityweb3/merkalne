@@ -48,6 +48,15 @@ const nextConfig: NextConfig = {
   async headers() {
     return [{ source: '/:path*', headers: securityHeaders }]
   },
+  async rewrites() {
+    // Fallback rewrite for RUNTIME uploads (advertiser banners): Next.js
+    // only serves files that were in public/ at build time, so /uploads/…
+    // files added after the build fall through to this API route, which
+    // streams them from disk. Rewrites run AFTER the filesystem check, so
+    // the static public/ file still wins whenever it exists (dev, or after
+    // a build that copied the folder).
+    return [{ source: '/uploads/:path*', destination: '/api/uploads/:path*' }]
+  },
 }
 
 // next-intl request config (locale → dictionary resolution).

@@ -321,8 +321,8 @@ assert_file_contains "${ROOT}/src/app/api/ads/campaigns/route.ts" "format: z.enu
   "campaigns POST: format selectable independently of billing"
 assert_file_contains "${ROOT}/src/app/api/ads/campaigns/route.ts" "billingModel: z.enum(['cpc', 'cpm'])" \
   "campaigns POST: exactly one billing model per campaign"
-assert_file_contains "${ROOT}/src/app/api/ads/campaigns/[id]/route.ts" "action: z.enum(['pause', 'resume', 'fund', 'update', 'delete'])" \
-  "campaigns PATCH: five actions incl. soft delete"
+assert_file_contains "${ROOT}/src/app/api/ads/campaigns/[id]/route.ts" "action: z.enum(['pause', 'resume', 'fund', 'update', 'delete', 'submit'])" \
+  "campaigns PATCH: six actions incl. submit (Phase 2) + soft delete"
 assert_file_contains "${ROOT}/src/app/api/ads/campaigns/[id]/route.ts" 'refundCampaignBudget' \
   "campaigns PATCH delete: unspent budget refunded to the wallet"
 assert_file_contains "${ROOT}/src/app/api/ads/wallet/route.ts" 'ledger:' \
@@ -333,14 +333,14 @@ assert_file_contains "${ROOT}/src/components/site/ads/ad-slot.tsx" "ad.format ==
   "AdSlot: banner format renders the image creative"
 assert_file_contains "${ROOT}/src/components/site/ads/ad-slot.tsx" 'reservationId' \
   "AdSlot: click beacon echoes the reservation id"
-assert_file_contains "${ROOT}/src/components/site/ads/ads-dashboard.tsx" 'billingCpc' \
-  "dashboard: billing model chips (CPC — pay per click)"
+assert_file_contains "${ROOT}/src/components/site/ads/campaign-wizard.tsx" 'billingCpc' \
+  "wizard: billing model chips (CPC — pay per click)"
 assert_file_contains "${ROOT}/src/components/site/ads/ads-dashboard.tsx" 'formatBanner' \
   "dashboard: format chips (Text / Banner)"
-assert_file_contains "${ROOT}/src/components/site/ads/ads-dashboard.tsx" 'bidSuffixCpc' \
-  "dashboard: bid shown in the model's unit ($/click, $/1000 views)"
-assert_file_contains "${ROOT}/src/components/site/ads/ads-dashboard.tsx" 'dailyBudgetLabel' \
-  "dashboard: daily budget field"
+assert_file_contains "${ROOT}/src/components/site/ads/campaign-wizard.tsx" 'bidSuffixCpc' \
+  "wizard: bid shown in the model's unit ($/click, $/1000 views)"
+assert_file_contains "${ROOT}/src/components/site/ads/campaign-wizard.tsx" 'dailyBudgetLabel' \
+  "wizard: daily budget field"
 assert_file_contains "${ROOT}/src/components/site/ads/ads-dashboard.tsx" 'ledgerTitle' \
   "dashboard: wallet ledger table"
 assert_file_contains "${ROOT}/src/components/site/ads/ads-dashboard.tsx" 'deleteBtn' \
@@ -378,6 +378,103 @@ assert_file_contains "${ROOT}/scripts/test-ads-auction.ts" 'pickPoolAndDraw' \
   "auction unit tests: pool split covered"
 [ -f "${ROOT}/scripts/apply-migration-sql.ts" ] && echo "  [ok]   local migration applier present" \
   || { echo "  [FAIL] scripts/apply-migration-sql.ts missing"; fail=1; }
+# --- Ads Phase 2: wizard, banner uploads, advanced targeting, moderation ----
+[ -f "${ROOT}/prisma/migrations/0012_ads_phase2_targeting_moderation/migration.sql" ] && echo "  [ok]   migration 0012_ads_phase2_targeting_moderation present" \
+  || { echo "  [FAIL] prisma/migrations/0012_ads_phase2_targeting_moderation missing"; fail=1; }
+assert_file_contains "${ROOT}/prisma/migrations/0012_ads_phase2_targeting_moderation/migration.sql" 'ADD COLUMN "targetKeywords"' \
+  "migration 0012: keyword targeting column"
+assert_file_contains "${ROOT}/prisma/migrations/0012_ads_phase2_targeting_moderation/migration.sql" 'ADD COLUMN "countryMode"' \
+  "migration 0012: country filter mode column"
+assert_file_contains "${ROOT}/prisma/migrations/0012_ads_phase2_targeting_moderation/migration.sql" 'ADD COLUMN "moderationNote"' \
+  "migration 0012: rejection-reason column"
+for PHASE2_COL in targetKeywords keywordMatch countryMode targetCountries targetHashtags; do
+  assert_file_contains "${ROOT}/prisma/schema.prisma" "${PHASE2_COL} " "schema (pg): Campaign.${PHASE2_COL} targeting"
+  assert_file_contains "${ROOT}/prisma/schema.sqlite.prisma" "${PHASE2_COL} " "schema (sqlite): Campaign.${PHASE2_COL} targeting"
+done
+assert_file_contains "${ROOT}/prisma/schema.prisma" 'moderationStatus String @default("draft")' \
+  "schema (pg): Creative.moderationStatus lifecycle"
+assert_file_contains "${ROOT}/prisma/schema.sqlite.prisma" 'moderationStatus String @default("draft")' \
+  "schema (sqlite): Creative.moderationStatus lifecycle"
+assert_file_contains "${ROOT}/prisma/schema.prisma" 'deletedAt' \
+  "schema (pg): Campaign soft delete (deletedAt)"
+assert_file_contains "${ROOT}/prisma/schema.sqlite.prisma" 'deletedAt' \
+  "schema (sqlite): Campaign soft delete (deletedAt)"
+[ -f "${ROOT}/src/lib/ads/targeting.ts" ] && echo "  [ok]   targeting lib present" \
+  || { echo "  [FAIL] src/lib/ads/targeting.ts missing"; fail=1; }
+assert_file_contains "${ROOT}/src/lib/ads/targeting.ts" 'export function targetingMatches' \
+  "targeting.ts: auction-facing matcher (unknown-inventory rule)"
+[ -f "${ROOT}/src/lib/ads/moderation.ts" ] && echo "  [ok]   moderation state machine present" \
+  || { echo "  [FAIL] src/lib/ads/moderation.ts missing"; fail=1; }
+assert_file_contains "${ROOT}/src/lib/ads/moderation.ts" 'export async function submitCampaignForReview' \
+  "moderation.ts: submit for review (DRAFT/REJECTED → PENDING)"
+assert_file_contains "${ROOT}/src/lib/ads/moderation.ts" 'export async function approveCampaign' \
+  "moderation.ts: approve (PENDING → ACTIVE)"
+assert_file_contains "${ROOT}/src/lib/ads/moderation.ts" 'export async function rejectCampaign' \
+  "moderation.ts: reject with reason (PENDING → REJECTED)"
+[ -f "${ROOT}/src/app/api/ads/assets/upload/route.ts" ] && echo "  [ok]   banner upload route present" \
+  || { echo "  [FAIL] src/app/api/ads/assets/upload/route.ts missing"; fail=1; }
+assert_file_contains "${ROOT}/src/app/api/ads/assets/upload/route.ts" 'MAX_BYTES = 1_572_864' \
+  "upload route: 1.5 MB hard cap"
+assert_file_contains "${ROOT}/src/app/api/ads/assets/upload/route.ts" 'function sniffImageType' \
+  "upload route: magic-byte content sniffing (PNG/JPEG/WebP only)"
+assert_file_contains "${ROOT}/src/app/api/ads/assets/upload/route.ts" "'/uploads/ads'" \
+  "upload route: local storage prefix (no external URLs)"
+[ -f "${ROOT}/src/components/site/ads/campaign-wizard.tsx" ] && echo "  [ok]   campaign wizard present" \
+  || { echo "  [FAIL] src/components/site/ads/campaign-wizard.tsx missing"; fail=1; }
+assert_file_contains "${ROOT}/src/components/site/ads/campaign-wizard.tsx" 'TOTAL_STEPS = 5' \
+  "wizard: five steps"
+assert_file_contains "${ROOT}/src/components/site/ads/campaign-wizard.tsx" 'wizardStepOf' \
+  "wizard: progress bar (Step N of 5)"
+assert_file_contains "${ROOT}/src/components/site/ads/campaign-wizard.tsx" 'btnSaveDraft' \
+  "wizard: save as draft from every step"
+assert_file_contains "${ROOT}/src/components/site/ads/campaign-wizard.tsx" 'keywordMatch' \
+  "wizard: keyword match mode UI (phrase/exact)"
+assert_file_contains "${ROOT}/src/components/site/ads/campaign-wizard.tsx" 'countryMode' \
+  "wizard: country mode UI (all/include/exclude)"
+assert_file_contains "${ROOT}/src/components/site/ads/ads-dashboard.tsx" 'moderationNote' \
+  "dashboard: rejection reason surfaced on REJECTED campaigns"
+assert_file_contains "${ROOT}/src/components/site/ads/ads-dashboard.tsx" "'draft' | 'pending'" \
+  "dashboard: draft/pending/rejected states modelled"
+[ -f "${ROOT}/src/app/api/webhooks/telegram-admin/route.ts" ] && echo "  [ok]   admin bot route present" \
+  || { echo "  [FAIL] src/app/api/webhooks/telegram-admin/route.ts missing"; fail=1; }
+assert_file_contains "${ROOT}/src/app/api/webhooks/telegram-admin/route.ts" '🛡 Moderation Queue' \
+  "admin bot: moderation queue menu entry"
+assert_file_contains "${ROOT}/src/app/api/webhooks/telegram-admin/route.ts" 'modok:' \
+  "admin bot: approve button"
+assert_file_contains "${ROOT}/src/app/api/webhooks/telegram-admin/route.ts" 'modno:' \
+  "admin bot: reject button"
+assert_file_contains "${ROOT}/src/app/api/webhooks/telegram-admin/route.ts" 'reject-reason' \
+  "admin bot: rejection reason capture"
+assert_file_contains "${ROOT}/src/app/api/webhooks/telegram-admin/route.ts" 'REJECT_REASON_MIN' \
+  "admin bot: reason length bounds"
+assert_file_contains "${ROOT}/src/app/api/ads/campaigns/route.ts" 'submit: z.boolean().default(false)' \
+  "campaigns API: create-as-draft vs submit-for-review"
+assert_file_contains "${ROOT}/src/app/api/ads/campaigns/route.ts" "keywordMatch: z.enum(['phrase', 'exact'])" \
+  "campaigns API: keyword match mode validation"
+assert_file_contains "${ROOT}/src/app/api/ads/campaigns/route.ts" "countryMode: z.enum(['all', 'include', 'exclude'])" \
+  "campaigns API: country mode validation"
+assert_file_contains "${ROOT}/src/app/api/ads/campaigns/[id]/route.ts" "z.enum(['pause', 'resume', 'fund', 'update', 'delete', 'submit'])" \
+  "campaigns API: PATCH submit action (revisions → PENDING)"
+assert_file_contains "${ROOT}/src/lib/ads/auction.ts" 'targetingMatches' \
+  "auction: consumes the Phase-2 targeting matcher"
+# every dictionary carries the Phase-2 wizard keys (grep loop, all 20 locales)
+PHASE2_COUNT="$(ls -1 "${ROOT}/src/i18n/messages" | grep -c '\.ts$')"
+PHASE2_OK=0
+for PHASE2_FILE in "${ROOT}"/src/i18n/messages/*.ts; do
+  if grep -q "wizardStepOf:" "${PHASE2_FILE}" && grep -q "btnSaveDraft:" "${PHASE2_FILE}" && grep -q "countryModeInclude:" "${PHASE2_FILE}"; then
+    PHASE2_OK=$((PHASE2_OK + 1))
+  else
+    echo "  [FAIL] ${PHASE2_FILE##*/}: missing Phase-2 wizard keys (wizardStepOf/btnSaveDraft/countryModeInclude)"
+    fail=1
+  fi
+done
+[ "${PHASE2_OK}" -eq "${PHASE2_COUNT}" ] && echo "  [ok]   Phase-2 wizard keys present in ${PHASE2_OK}/${PHASE2_COUNT} dictionaries" \
+  || { echo "  [FAIL] Phase-2 wizard keys: only ${PHASE2_OK}/${PHASE2_COUNT} dictionaries covered"; fail=1; }
+# e2e suite rewritten for the Phase-2 contract
+assert_file_contains "${ROOT}/scripts/test-ads-e2e.ts" 'Phase 2' \
+  "ads e2e: suite covers Phase 2 (wizard/uploads/moderation)"
+assert_file_contains "${ROOT}/scripts/test-ads-e2e.ts" 'content sniffing' \
+  "ads e2e: upload content sniffing covered"
 # --- BlockBee processor + referral system (2026 payments build) ----------------
 assert_file_contains "${ROOT}/prisma/schema.prisma" 'model PaymentLog' \
   "schema: PaymentLog audit trail"
@@ -633,31 +730,40 @@ mkdir -p "${STAGE}"
 
 # rsync if available, cp fallback
 if command -v rsync >/dev/null 2>&1; then
+  # Every directory/name exclude is ANCHORED with a leading "/" so it
+  # matches ONLY at the tree root. Unanchored rsync patterns match the
+  # basename at ANY depth: the original unanchored `--exclude 'upload'`
+  # (meant for the top-level sandbox uploads dir) silently ALSO stripped
+  # src/app/api/ads/assets/upload — the Phase 2 banner-upload route — out
+  # of the archive while the file sat safely in the working tree. That is
+  # exactly how a "fresh" export shipped a stale bundle. Wildcard/cache
+  # patterns (*.log, *.tsbuildinfo, .eslintcache) stay unanchored on
+  # purpose — they are safe to match at any depth.
   rsync -a \
-    --exclude 'node_modules' \
-    --exclude '.next' \
-    --exclude '.git' \
-    --exclude 'db' \
-    --exclude '.env' \
-    --exclude '.env.*' \
-    --exclude 'dist' \
-    --exclude 'dist-export' \
-    --exclude 'dev.log' \
-    --exclude 'server.log' \
+    --exclude '/node_modules' \
+    --exclude '/.next' \
+    --exclude '/.git' \
+    --exclude '/db' \
+    --exclude '/.env' \
+    --exclude '/.env.*' \
+    --exclude '/dist' \
+    --exclude '/dist-export' \
+    --exclude '/dev.log' \
+    --exclude '/server.log' \
     --exclude '*.log' \
-    --exclude 'upload' \
-    --exclude 'tool-results' \
-    --exclude 'skills' \
-    --exclude '.zscripts' \
-    --exclude 'mini-services' \
-    --exclude 'examples' \
-    --exclude 'tests' \
-    --exclude 'Caddyfile' \
-    --exclude 'next-env.d.ts' \
+    --exclude '/upload' \
+    --exclude '/tool-results' \
+    --exclude '/skills' \
+    --exclude '/.zscripts' \
+    --exclude '/mini-services' \
+    --exclude '/examples' \
+    --exclude '/tests' \
+    --exclude '/Caddyfile' \
+    --exclude '/next-env.d.ts' \
     --exclude '*.tsbuildinfo' \
-    --exclude '.eslintcache' \
-    --exclude 'download' \
-    --exclude 'worklog.md' \
+    --exclude '/.eslintcache' \
+    --exclude '/download' \
+    --exclude '/worklog.md' \
     "${ROOT}/" "${STAGE}/merklane/"
 else
   echo "[export] rsync not found — please install rsync and retry." >&2
@@ -667,6 +773,48 @@ fi
 # .env.example MUST be present even though .env* is excluded above
 if [ ! -f "${STAGE}/merklane/.env.example" ]; then
   cp "${ROOT}/.env.example" "${STAGE}/merklane/.env.example"
+fi
+
+# ---------------------------------------------------------------------------
+# Staging structural guard — the tarball is created from THIS tree, so this
+# is the last chance to catch files that exist in the working tree but were
+# dropped by an exclude pattern, or were never saved at all (the exact bug
+# that shipped a Phase-2 bundle without the banner-upload route while the
+# route sat in src/). A miss here aborts the export BEFORE the tarball is
+# written, so a broken bundle can never reach the output dir.
+# ---------------------------------------------------------------------------
+stage_fail=0
+for STAGE_MUST in \
+  "src/app/api/ads/assets/upload/route.ts" \
+  "src/app/api/uploads/[...path]/route.ts" \
+  "public/uploads/ads/README.txt" \
+  "src/components/site/ads/campaign-wizard.tsx" \
+  "src/components/site/ads/ads-dashboard.tsx" \
+  "src/components/site/ads/ad-slot.tsx" \
+  "src/lib/ads/moderation.ts" \
+  "src/lib/ads/targeting.ts" \
+  "src/lib/ads/wallet.ts" \
+  "src/lib/ads/auction.ts" \
+  "src/lib/ads/money.ts" \
+  "src/app/api/webhooks/telegram-admin/route.ts" \
+  "src/app/api/webhooks/blockbee/route.ts" \
+  "prisma/schema.prisma" \
+  "prisma/schema.sqlite.prisma" \
+  "prisma/migrations/0011_ads_phase1_double_entry/migration.sql" \
+  "prisma/migrations/0012_ads_phase2_targeting_moderation/migration.sql" \
+  "scripts/test-ads-e2e.ts" \
+  "src/i18n/messages/en.ts"; do
+  if [ -f "${STAGE}/merklane/${STAGE_MUST}" ]; then
+    echo "  [ok]   staged: ${STAGE_MUST}"
+  else
+    echo "  [FAIL] staged tree missing ${STAGE_MUST}" >&2
+    echo "         (an exclude pattern dropped it, or the file was never saved)" >&2
+    stage_fail=1
+  fi
+done
+if [ "${stage_fail}" != "0" ]; then
+  echo "[export] ABORTED — the staged tree is incomplete (see above)." >&2
+  exit 1
 fi
 
 echo "[export] generating MANIFEST + manifest.sha256…"
@@ -964,6 +1112,82 @@ done
   || { echo "  [FAIL] archive: scripts/apply-migration-sql.ts MISSING"; archive_fail=1; }
 assert_file_contains "${VERIFY_DIR}/merklane/scripts/test-ads-e2e.ts" 'ledgerInvariant' \
   "archive: ads e2e carries the ledger invariant check"
+# --- Ads Phase 2 (in-archive mirror) -------------------------------------------
+if [ -f "${VERIFY_DIR}/merklane/src/app/api/ads/assets/upload/route.ts" ]; then
+  echo "  [ok]   archive: banner upload route ships (src/app/api/ads/assets/upload)"
+else
+  echo "  [FAIL] archive: src/app/api/ads/assets/upload/route.ts MISSING" >&2
+  echo "         (an rsync exclude pattern stripped it — anchor the excludes!)" >&2
+  archive_fail=1
+fi
+assert_file_contains "${VERIFY_DIR}/merklane/src/app/api/ads/assets/upload/route.ts" 'MAX_BYTES = 1_572_864' \
+  "archive: upload route 1.5 MB cap"
+assert_file_contains "${VERIFY_DIR}/merklane/src/app/api/ads/assets/upload/route.ts" 'sniffImageType' \
+  "archive: upload route magic-byte sniffing"
+assert_file_contains "${VERIFY_DIR}/merklane/src/app/api/ads/assets/upload/route.ts" "'/uploads/ads'" \
+  "archive: upload route local storage prefix"
+[ -f "${VERIFY_DIR}/merklane/src/components/site/ads/campaign-wizard.tsx" ] && echo "  [ok]   archive: campaign wizard ships" \
+  || { echo "  [FAIL] archive: campaign-wizard.tsx MISSING"; archive_fail=1; }
+assert_file_contains "${VERIFY_DIR}/merklane/src/components/site/ads/campaign-wizard.tsx" 'TOTAL_STEPS = 5' \
+  "archive: wizard is the 5-step flow"
+assert_file_contains "${VERIFY_DIR}/merklane/src/components/site/ads/campaign-wizard.tsx" 'wizardStepOf' \
+  "archive: wizard progress bar (Step N of 5)"
+assert_file_contains "${VERIFY_DIR}/merklane/src/components/site/ads/campaign-wizard.tsx" 'btnSaveDraft' \
+  "archive: wizard save-as-draft"
+[ -f "${VERIFY_DIR}/merklane/src/lib/ads/moderation.ts" ] && echo "  [ok]   archive: moderation state machine ships" \
+  || { echo "  [FAIL] archive: src/lib/ads/moderation.ts MISSING"; archive_fail=1; }
+assert_file_contains "${VERIFY_DIR}/merklane/src/lib/ads/moderation.ts" 'submitCampaignForReview' \
+  "archive: submit-for-review (DRAFT/REJECTED → PENDING)"
+assert_file_contains "${VERIFY_DIR}/merklane/src/lib/ads/moderation.ts" 'rejectCampaign' \
+  "archive: reject-with-reason (→ REJECTED)"
+[ -f "${VERIFY_DIR}/merklane/src/lib/ads/targeting.ts" ] && echo "  [ok]   archive: targeting matcher ships" \
+  || { echo "  [FAIL] archive: src/lib/ads/targeting.ts MISSING"; archive_fail=1; }
+assert_file_contains "${VERIFY_DIR}/merklane/src/lib/ads/targeting.ts" 'targetingMatches' \
+  "archive: targeting matcher"
+assert_file_contains "${VERIFY_DIR}/merklane/src/app/api/webhooks/telegram-admin/route.ts" '🛡 Moderation Queue' \
+  "archive: admin bot moderation queue menu"
+assert_file_contains "${VERIFY_DIR}/merklane/src/app/api/webhooks/telegram-admin/route.ts" 'modok:' \
+  "archive: admin bot approve button"
+assert_file_contains "${VERIFY_DIR}/merklane/src/app/api/webhooks/telegram-admin/route.ts" 'modno:' \
+  "archive: admin bot reject button"
+assert_file_contains "${VERIFY_DIR}/merklane/src/app/api/webhooks/telegram-admin/route.ts" 'reject-reason' \
+  "archive: admin bot rejection reason capture"
+[ -f "${VERIFY_DIR}/merklane/prisma/migrations/0012_ads_phase2_targeting_moderation/migration.sql" ] && echo "  [ok]   archive: migration 0012 ships" \
+  || { echo "  [FAIL] archive: migration 0012 MISSING"; archive_fail=1; }
+for PHASE2_ARCHIVE_COL in targetKeywords keywordMatch countryMode targetHashtags; do
+  assert_file_contains "${VERIFY_DIR}/merklane/prisma/schema.prisma" "${PHASE2_ARCHIVE_COL} " \
+    "archive: schema (pg) Campaign.${PHASE2_ARCHIVE_COL}"
+  assert_file_contains "${VERIFY_DIR}/merklane/prisma/schema.sqlite.prisma" "${PHASE2_ARCHIVE_COL} " \
+    "archive: schema (sqlite) Campaign.${PHASE2_ARCHIVE_COL}"
+done
+archive_phase2_i18n_ok=0
+for dict in "${VERIFY_DIR}"/merklane/src/i18n/messages/*.ts; do
+  if grep -q "wizardStepOf:" "${dict}" && grep -q "btnSaveDraft:" "${dict}" && grep -q "countryModeInclude:" "${dict}"; then
+    archive_phase2_i18n_ok=$((archive_phase2_i18n_ok + 1))
+  fi
+done
+[ "${archive_phase2_i18n_ok}" -eq 20 ] && echo "  [ok]   archive: Phase-2 wizard keys in all 20 dictionaries" \
+  || { echo "  [FAIL] archive: Phase-2 wizard keys in only ${archive_phase2_i18n_ok}/20 dictionaries"; archive_fail=1; }
+assert_file_contains "${VERIFY_DIR}/merklane/scripts/test-ads-e2e.ts" 'Phase 2' \
+  "archive: ads e2e is the Phase-2 suite"
+# The exact regression the last stale bundle shipped, probed the way a
+# downstream verifier would probe the extracted tree (grep -r, not -F):
+if grep -rq "wizard" "${VERIFY_DIR}/merklane/src/components/site/" \
+  && grep -rq "Moderation Queue" "${VERIFY_DIR}/merklane/src/" \
+  && grep -rq "PENDING" "${VERIFY_DIR}/merklane/src/lib/ads/" \
+  && grep -rq "magic-byte" "${VERIFY_DIR}/merklane/src/"; then
+  echo "  [ok]   archive: Phase-2 landmarks greppable (wizard / Moderation Queue / PENDING / magic-byte)"
+else
+  echo "  [FAIL] archive: Phase-2 landmarks not greppable — stale or partial bundle" >&2
+  archive_fail=1
+fi
+# upload route reachable by name search, mirroring find -name '*upload*'
+if [ -n "$(find "${VERIFY_DIR}/merklane/src/app/api" -name '*upload*' -type d)" ]; then
+  echo "  [ok]   archive: upload directories findable under src/app/api"
+else
+  echo "  [FAIL] archive: find src/app/api -name '*upload*' is empty — exclude bug" >&2
+  archive_fail=1
+fi
 # Cross-check: every file listed in the archive MANIFEST exists after extraction
 MANIFEST_COUNT="$(wc -l < "${VERIFY_DIR}/merklane/MANIFEST" | tr -d ' ')"
 MISSING_IN_ARCHIVE="$(cd "${VERIFY_DIR}/merklane" && while IFS= read -r f; do [ -f "${f}" ] || echo "${f}"; done < MANIFEST | head -5)"

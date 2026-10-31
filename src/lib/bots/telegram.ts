@@ -210,6 +210,57 @@ export function tgEscape(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 
+/**
+ * Send a photo by PUBLIC URL (Telegram's servers fetch it) with an HTML
+ * caption — used by the admin bot's ad moderation queue to preview banner
+ * creatives. Falls back to the console transport in dev exactly like
+ * telegramSendMessage, so the flow stays testable without a token.
+ */
+export async function telegramSendPhoto(
+  chatId: string | number,
+  photoUrl: string,
+  caption: string,
+  opts?: { token?: string; replyMarkup?: { inline_keyboard: TelegramInlineButton[][] } },
+): Promise<SendResult> {
+  const token = opts?.token ?? botEnv.TELEGRAM_BOT_TOKEN
+  if (!token) {
+    console.info(
+      `\n[telegram:dev-only] ──────────────────────────────────────────\n` +
+        `Chat:   ${chatId} (photo)\nPhoto:  ${photoUrl}\n${caption}\n` +
+        (opts?.replyMarkup ? `Buttons: ${JSON.stringify(opts.replyMarkup.inline_keyboard.flat().map((b) => b.text))}\n` : '') +
+        `──────────────────────────────────────────────────────────\n`,
+    )
+    const isDev = process.env.NODE_ENV !== 'production'
+    return { delivered: isDev, devFallback: true, description: isDev ? 'console_fallback' : 'token_not_configured' }
+  }
+
+  try {
+    const res = await fetch(`${API_BASE}/bot${token}/sendPhoto`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: chatId,
+        photo: photoUrl,
+        caption: caption.slice(0, 1024),
+        parse_mode: 'HTML',
+        ...(opts?.replyMarkup ? { reply_markup: opts.replyMarkup } : {}),
+      }),
+      signal: AbortSignal.timeout(10_000),
+    })
+    const payload = (await res.json().catch(() => null)) as
+      | { ok: boolean; description?: string; result?: { message_id: number } }
+      | null
+    if (!res.ok || !payload?.ok) {
+      console.error('[telegram] sendPhoto failed:', payload?.description ?? res.status)
+      return { delivered: false, devFallback: false, description: payload?.description ?? `HTTP ${res.status}` }
+    }
+    return { delivered: true, devFallback: false, messageId: payload.result?.message_id }
+  } catch (err) {
+    console.error('[telegram] sendPhoto network error:', err)
+    return { delivered: false, devFallback: false, description: 'network error' }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Command parsing
 // ---------------------------------------------------------------------------

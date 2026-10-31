@@ -443,6 +443,9 @@ model TeamMember {
 // ---------------------------------------------------------------------------
 // Merklane Ads — Phase 1: double-entry wallet, campaign/creative structure,
 // budget reservations, crypto top-ups
+// Phase 2: step-by-step wizard, banner uploads, advanced targeting
+// (keywords / countries / hashtags), DRAFT → PENDING → APPROVED moderation
+// lifecycle driven from the Telegram admin bot
 // ---------------------------------------------------------------------------
 
 /**
@@ -528,8 +531,12 @@ model LedgerEntry {
  *   imageUrl) and the rendering in <AdSlot/>.
  *
  *   status (app-layer validated, lowercase):
- *     "draft" | "pending" | "active" | "paused" | "completed"
- *   Only "active" campaigns with deletedAt = null enter the auction.
+ *     "draft" | "pending" | "active" | "paused" | "completed" | "rejected"
+ *   Only "active" campaigns with deletedAt = null AND an APPROVED latest
+ *   creative enter the auction (Phase 2 moderation: campaigns go
+ *   DRAFT → PENDING (submit for review) → ACTIVE (approved) or REJECTED;
+ *   editing an APPROVED campaign appends a new creative revision and sends
+ *   the campaign back to PENDING).
  *
  * Budget semantics — a campaign has no mutable "balance" column. Its
  * spendable budget is always derived from the ledger:
@@ -540,10 +547,36 @@ model LedgerEntry {
  *   remaining = committed − spent − held
  *
  * totalBudgetMicroUsd records the current total allocation (it grows with
- * "add funds"); dailyBudgetMicroUsd is a per-UTC-day spend cap where
- * 0 = no daily cap. deletedAt is the soft delete: deleted campaigns never
- * serve again and their unspent budget is refunded to the wallet (ledger
- * type refund) at deletion time.
+ * "add funds"). For a DRAFT it stores the PLANNED budget — the money is
+ * reserved from the wallet only when the campaign is submitted for review
+ * (PATCH action "submit"), so drafts never lock wallet funds. dailyBudget-
+ * MicroUsd is a per-UTC-day spend cap where 0 = no daily cap. deletedAt is
+ * the soft delete: deleted campaigns never serve again and their unspent
+ * budget is refunded to the wallet (ledger type refund) at deletion time —
+ * the delete action works from EVERY state, drafts included.
+ *
+ * Targeting (all stored as normalised CSV strings — see the modelling rules
+ * at the top of this file; empty = no restriction, the campaign then buys
+ * that dimension everywhere):
+ *   targetSections   section slugs ("intern-junior", …)
+ *   targetLocales    interface locale codes ("en", "ru", …)
+ *   targetKeywords   contextual keyword phrases (lowercase). Matching is
+ *                    controlled by keywordMatch:
+ *                      "phrase" — a keyword matches when it appears as a
+ *                                 case-insensitive substring of the page's
+ *                                 keyword context (title + tags)
+ *                      "exact"  — a keyword must equal one of the page's
+ *                                 context phrases exactly
+ *   countryMode      visitor-country filter:
+ *                      "all"      — no country restriction (default)
+ *                      "include"  — serve ONLY in the listed countries
+ *                      "exclude"  — serve everywhere EXCEPT the listed ones
+ *   targetCountries  ISO 3166-1 alpha-2 codes, uppercase ("DE,US")
+ *   targetHashtags   exact hashtags (lowercase, no "#") matched against the
+ *                    tags of the page being served
+ * A campaign with a restriction in a dimension never buys UNKNOWN inventory:
+ * pages that carry no keyword/hashtag/country context only match campaigns
+ * without that restriction (src/lib/ads/targeting.ts).
  */
 model Campaign {
   id                  String    @id @default(cuid())
@@ -559,9 +592,10 @@ model Campaign {
   /// Per-UTC-day spend cap. 0 = no daily cap.
   dailyBudgetMicroUsd Int       @default(0)
   /// Current total allocation reserved from the wallet at create/fund time.
+  /// For drafts: the PLANNED budget (reserved at submit-for-review time).
   totalBudgetMicroUsd Int
-  /// "draft" | "pending" | "active" | "paused" | "completed"
-  status              String    @default("active")
+  /// "draft" | "pending" | "active" | "paused" | "completed" | "rejected"
+  status              String    @default("draft")
   /// Soft delete — set together with status "completed"; the unspent
   /// budget is refunded to the wallet in the same transaction.
   deletedAt           DateTime?
@@ -569,6 +603,16 @@ model Campaign {
   targetSections      String    @default("")
   /// Comma-separated target locale codes; empty = every language.
   targetLocales       String    @default("")
+  /// Comma-separated lowercase keyword phrases; empty = site-wide.
+  targetKeywords      String    @default("")
+  /// "phrase" | "exact" — how targetKeywords is matched (see model comment).
+  keywordMatch        String    @default("phrase")
+  /// "all" | "include" | "exclude" — visitor-country filter mode.
+  countryMode         String    @default("all")
+  /// Comma-separated ISO 3166-1 alpha-2 codes (uppercase); empty = all.
+  targetCountries     String    @default("")
+  /// Comma-separated lowercase hashtags (no "#"); empty = no restriction.
+  targetHashtags      String    @default("")
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
 
@@ -586,29 +630,42 @@ model Campaign {
  * auction always serves the latest APPROVED version.
  *
  *   format "text"   → title + body are the card copy (imageUrl stays null)
- *   format "banner" → imageUrl is the creative (title/body stay null)
+ *   format "banner" → imageUrl is the creative (title/body stay null) — a
+ *                     LOCAL upload path ("/uploads/ads/<uuid>.png") produced
+ *                     by /api/ads/assets/upload (Phase 2: no external URLs)
  *
- * targetUrl is the https destination every click opens.
+ * targetUrl is the https destination every click opens. displayDomain is
+ * the optional friendly host shown on the card (defaults to the target
+ * URL's host). altText is the banner accessibility label.
  *
- * moderationStatus: "pending" | "approved" | "rejected" (app-layer validated).
- * Phase 1 auto-approves at creation — the moderation queue itself is a later
- * phase; the field exists so that flow can be added without a migration.
+ * moderationStatus (app-layer validated): "draft" | "pending" | "approved" |
+ * "rejected" — the Phase 2 lifecycle: a draft creative is born "draft",
+ * "submit for review" flips it to "pending", a moderator (Telegram admin
+ * bot) approves or rejects it; a rejection stores the human reason in
+ * moderationNote so the dashboard can show exactly what to fix. Campaigns
+ * only serve their latest creative while it is APPROVED.
  */
 model Creative {
   id        String   @id @default(cuid())
   campaignId String
-  /// Text format: card headline (≤ 80 chars). Banner format: null.
+  /// Text format: card headline (≤ 120 chars). Banner format: null.
   title     String?
-  /// Text format: card body copy (≤ 200 chars). Banner format: null.
+  /// Text format: card body copy (≤ 500 chars). Banner format: null.
   body      String?
-  /// Banner format: https image URL. Text format: null.
+  /// Banner format: LOCAL upload path (/uploads/ads/…). Text format: null.
   imageUrl  String?
+  /// Banner format: accessibility label (≤ 120 chars).
+  altText   String?
+  /// Optional friendly domain shown on the card instead of the target host.
+  displayDomain String?
   /// https destination opened on click (both formats).
   targetUrl String
   /// Monotonic per campaign — 1 on create, +1 per content edit.
   version   Int      @default(1)
-  /// "pending" | "approved" | "rejected"
-  moderationStatus String @default("approved")
+  /// "draft" | "pending" | "approved" | "rejected"
+  moderationStatus String @default("draft")
+  /// Moderator's rejection reason (set when moderationStatus = "rejected").
+  moderationNote   String?
   createdAt DateTime @default(now())
 
   campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)

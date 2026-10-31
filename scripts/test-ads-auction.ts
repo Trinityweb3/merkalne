@@ -136,6 +136,99 @@ check(budgetEventEstimate(cpc, 1_000, 50) === 20, '$10 at $0.50/click ≈ 20 cli
 check(budgetEventEstimate(cpm, 1_000, 200) === 5_000, '$10 at $2.00 CPM ≈ 5000 views')
 check(budgetEventEstimate(cpm, 1_000, 0) === 0, 'zero bid → zero estimate (never divides by zero)')
 
+console.log('— 8. Phase 2 targeting: keywords / hashtags / countries —')
+import {
+  parseCountryInput,
+  parseHashtagInput,
+  parseKeywordInput,
+  targetingMatches,
+  type CampaignTargeting,
+} from '../src/lib/ads/targeting'
+
+/** Convenience factory: everything unrestricted by default. */
+function camp(over: Partial<CampaignTargeting> = {}): CampaignTargeting {
+  return {
+    targetSections: '',
+    targetLocales: '',
+    targetKeywords: '',
+    keywordMatch: 'phrase',
+    countryMode: 'all',
+    targetCountries: '',
+    targetHashtags: '',
+    ...over,
+  }
+}
+
+// unrestricted campaign matches anything, including context-less requests
+check(targetingMatches(camp(), {}) === true, 'no restrictions → matches a context-less request')
+check(targetingMatches(camp(), { section: 'markets', locale: 'ru', country: 'DE', keywords: ['bitcoin'], hashtags: ['crypto'] }) === true, 'no restrictions → matches a rich context')
+
+// sections & locales (Phase 1 rules unchanged)
+check(targetingMatches(camp({ targetSections: 'markets' }), { section: 'markets' }) === true, 'section match')
+check(targetingMatches(camp({ targetSections: 'markets' }), { section: 'blog' }) === false, 'section mismatch')
+check(targetingMatches(camp({ targetSections: 'markets' }), {}) === true, 'section restriction ignored when the page carries no section')
+
+// keywords — phrase mode
+check(
+  targetingMatches(camp({ targetKeywords: 'smart contracts' }), { keywords: ['Ethereum Smart Contracts 101', 'web3'] }) === true,
+  'phrase keyword: substring of a context phrase (case-insensitive)',
+)
+check(
+  targetingMatches(camp({ targetKeywords: 'solidity' }), { keywords: ['remote solidity jobs', 'junior'] }) === true,
+  'phrase keyword: substring across the joined context',
+)
+check(
+  targetingMatches(camp({ targetKeywords: 'rust' }), { keywords: ['remote solidity jobs'] }) === false,
+  'phrase keyword: no substring → no match',
+)
+// keywords — exact mode
+check(
+  targetingMatches(camp({ targetKeywords: 'solidity', keywordMatch: 'exact' }), { keywords: ['Solidity', 'junior'] }) === true,
+  'exact keyword: equals a context phrase (case-insensitive)',
+)
+check(
+  targetingMatches(camp({ targetKeywords: 'solidity jobs', keywordMatch: 'exact' }), { keywords: ['remote solidity jobs'] }) === false,
+  'exact keyword: substring of a phrase is NOT an exact match',
+)
+// unknown-inventory rule
+check(
+  targetingMatches(camp({ targetKeywords: 'solidity' }), {}) === false,
+  'keyword-targeted campaign never buys pages without keyword context',
+)
+check(
+  targetingMatches(camp({ targetKeywords: 'solidity' }), { keywords: [] }) === false,
+  'keyword-targeted campaign ignores empty keyword lists',
+)
+
+// hashtags — exact tags
+check(targetingMatches(camp({ targetHashtags: 'web3' }), { hashtags: ['Web3', 'jobs'] }) === true, 'hashtag match (case-insensitive, exact)')
+check(targetingMatches(camp({ targetHashtags: 'web3' }), { hashtags: ['web3jobs'] }) === false, 'hashtag must be exact, not a substring')
+check(targetingMatches(camp({ targetHashtags: 'web3,jobs' }), { hashtags: ['jobs'] }) === true, 'multiple campaign hashtags are OR-ed')
+check(targetingMatches(camp({ targetHashtags: 'web3' }), {}) === false, 'hashtag campaign never buys pages without tags')
+
+// countries — include / exclude / all
+check(targetingMatches(camp({ countryMode: 'include', targetCountries: 'de,us' }), { country: 'de' }) === true, 'include: listed country matches')
+check(targetingMatches(camp({ countryMode: 'include', targetCountries: 'de,us' }), { country: 'FR' }) === false, 'include: unlisted country does not match')
+check(targetingMatches(camp({ countryMode: 'exclude', targetCountries: 'de,us' }), { country: 'fr' }) === true, 'exclude: unlisted country matches')
+check(targetingMatches(camp({ countryMode: 'exclude', targetCountries: 'de,us' }), { country: 'US' }) === false, 'exclude: listed country does not match')
+check(targetingMatches(camp({ countryMode: 'include', targetCountries: 'de' }), {}) === false, 'restricted campaign never buys unknown-country traffic')
+check(targetingMatches(camp({ countryMode: 'include', targetCountries: '' }), { country: 'fr' }) === true, 'include mode with an empty list = no restriction')
+check(targetingMatches(camp({ countryMode: 'weird', targetCountries: 'de' }), { country: 'fr' }) === true, 'unknown mode falls back to "all" (defence in depth)')
+
+// input parsers
+check(
+  JSON.stringify(parseKeywordInput(['Solidity', '  remote   junior ', 'solidity', '', 'x'.repeat(80)])) === JSON.stringify(['solidity', 'remote junior']),
+  'parseKeywordInput: trims, lowercases, dedupes, caps length; overlong phrases dropped',
+)
+check(
+  JSON.stringify(parseHashtagInput(['#Web3', 'Jobs', 'web3'])) === JSON.stringify(['web3', 'jobs']),
+  'parseHashtagInput: strips leading #, lowercases, dedupes',
+)
+check(
+  JSON.stringify(parseCountryInput(['de', ' US ', 'deu', 'DE'])) === JSON.stringify(['DE', 'US']),
+  'parseCountryInput: uppercases valid ISO alpha-2, drops 3+ letter garbage + dupes',
+)
+
 console.log('')
 if (fail > 0) {
   console.log(`FAILED: ${fail} check(s) failed (${pass} passed)`)
